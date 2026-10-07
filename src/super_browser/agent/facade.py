@@ -12,6 +12,7 @@ from super_browser.agent.delegator import SubagentDelegator
 from super_browser.agent.loop import AgentLoop
 from super_browser.agent.registry import ToolRegistry
 from super_browser.agent.types import DelegationResult, StepEvent, StreamEvent
+from super_browser.browser.page import NormalizedPage
 from super_browser.browser.session import BrowserSession
 from super_browser.browser.tabs import TabManager, TabSnapshot
 from super_browser.config import Config
@@ -112,7 +113,10 @@ class SuperBrowser:
 
         self._engine = create_browser_engine(cfg)
         await self._engine.start()
-        self._page = await self._engine.new_page()
+        # P3: the façade page is ALWAYS a NormalizedPage — the exact
+        # EnginePage the engine built, wrapped with the backend-neutral
+        # contract (engine_page / backend_page / cdp / screenshot).
+        self._page = NormalizedPage(engine_page=await self._engine.new_page())
         # Interim until P5 retires the legacy session seam: recovery and
         # checkpointing still accept the Patchright session when offered.
         self._session = getattr(self._engine, "session", None)
@@ -834,6 +838,11 @@ class SuperBrowser:
         """Wire a raw Playwright Page into the facade's _page and _controller.
 
         Shared by :meth:`open_tab` and :meth:`switch_tab`.
+
+        P3: the legacy ``PageHandle`` stays the tab adapter until P5 retires
+        this path, but what the façade stores is a ``NormalizedPage`` built
+        from the handle's surfaces — identical abstraction after tab
+        attachment as after ``start()``.
         """
         ctx = self._engine.context
         if ctx is None:
@@ -843,8 +852,13 @@ class SuperBrowser:
         from super_browser.browser.cdp import CDPBridge
         from super_browser.browser.config import SessionConfig as _SC
         cdp = CDPBridge(cdp_session, _SC())
-        self._page = PageHandle(page_obj, cdp)
-        self._controller = MultimodalController(self._page, self._page.engine_page.cdp)
+        handle = PageHandle(page_obj, cdp)
+        self._page = NormalizedPage(
+            engine_page=handle.engine_page,
+            backend_page=handle.backend_page,
+            cdp=handle.cdp,
+        )
+        self._controller = MultimodalController(self._page, self._page.cdp)
         # Wire diagnostics listeners onto the new tab/switched page.
         self._attach_diagnostics(self._page.backend_page)
 

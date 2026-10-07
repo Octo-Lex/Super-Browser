@@ -12,7 +12,7 @@ from typing import Any, Optional
 from urllib.parse import urlparse
 
 from super_browser.browser.cdp import CDPBridge
-from super_browser.browser.page import PageHandle
+from super_browser.browser.page import NormalizedPage
 from super_browser.interaction.cache import TierPreferenceCache
 from super_browser.interaction.decorator import agent_action
 from super_browser.interaction.recovery import StaleRefDetector
@@ -117,7 +117,10 @@ class MultimodalController:
 
     def __init__(
         self,
-        page: PageHandle,
+        # P3: the façade hands the controller a NormalizedPage. Cascade and
+        # capability behavior are unchanged here — P4 owns making the
+        # coordinate tier genuinely capability-aware.
+        page: NormalizedPage,
         cdp: CDPBridge,
         tier_cache: Optional[TierPreferenceCache] = None,
         vision_provider: Optional[VisionProviderFactory] = None,

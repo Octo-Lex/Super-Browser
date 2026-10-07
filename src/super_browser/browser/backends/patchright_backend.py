@@ -190,7 +190,14 @@ class PatchrightPage:
         return await self._page.evaluate(expression, *args, **kwargs)
 
     async def screenshot(self, **kwargs: Any) -> bytes:
-        """Capture screenshot as PNG bytes."""
+        """Capture a screenshot.
+
+        ``format="png" | "jpeg"`` is the canonical vocabulary (PR 1 P3);
+        translated to the Playwright ``type=`` spelling here so callers never
+        need to know the backend. A raw ``type=`` passes through untouched.
+        """
+        if "format" in kwargs:
+            kwargs["type"] = kwargs.pop("format")
         return await self._page.screenshot(**kwargs)
 
     # -- Routing ---------------------------------------------------
