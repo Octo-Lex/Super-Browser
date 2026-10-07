@@ -192,7 +192,7 @@ class TestLifecycleSmoke:
         """start/stop with mocked engine."""
         sb = SuperBrowser()
 
-        with patch("super_browser.agent.facade._detect_backend", return_value="patchright"):
+        with patch("super_browser.browser.factory._detect_backend", return_value="patchright"):
             with patch("super_browser.browser.backends.patchright_backend.PatchrightEngine") as MockEngine:
                 mock_engine = AsyncMock()
                 mock_page = MagicMock()

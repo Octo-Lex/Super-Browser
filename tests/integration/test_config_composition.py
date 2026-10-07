@@ -136,7 +136,7 @@ class TestConfigPathFeatures:
         cfg = self._make_config(enable_stealth=True)
         sb = SuperBrowser(cfg)
         mock_engine, _ = _mock_engine_and_page()
-        with patch("super_browser.agent.facade._detect_backend", return_value="patchright"), \
+        with patch("super_browser.browser.factory._detect_backend", return_value="patchright"), \
              patch("super_browser.browser.backends.patchright_backend.PatchrightEngine", return_value=mock_engine), \
              patch("super_browser.stealth.StealthManager") as MockStealth:
             MockStealth.return_value = MagicMock()
@@ -152,9 +152,8 @@ class TestConfigPathFeatures:
         cfg = self._make_config(enable_budget=True)
         sb = SuperBrowser(cfg)
         mock_engine, _ = _mock_engine_and_page()
-        with patch("super_browser.agent.facade._detect_backend", return_value="patchright"), \
-             patch("super_browser.browser.backends.patchright_backend.PatchrightEngine", return_value=mock_engine), \
-             patch("super_browser.agent.facade.SessionConfig"):
+        with patch("super_browser.browser.factory._detect_backend", return_value="patchright"), \
+             patch("super_browser.browser.backends.patchright_backend.PatchrightEngine", return_value=mock_engine):
             await sb.start()
             assert sb._budget_client is not None
             await sb.stop()
@@ -170,7 +169,7 @@ class TestConfigPathFeatures:
         )
         sb = SuperBrowser(cfg)
         mock_engine, _ = _mock_engine_and_page()
-        with patch("super_browser.agent.facade._detect_backend", return_value="patchright"), \
+        with patch("super_browser.browser.factory._detect_backend", return_value="patchright"), \
              patch("super_browser.browser.backends.patchright_backend.PatchrightEngine", return_value=mock_engine):
             await sb.start()
             assert sb._flow_logger is not None
@@ -186,7 +185,7 @@ class TestConfigPathFeatures:
         cfg = Config(tracing=TracingConfig(enabled=True))
         sb = SuperBrowser(cfg)
         mock_engine, _ = _mock_engine_and_page()
-        with patch("super_browser.agent.facade._detect_backend", return_value="patchright"), \
+        with patch("super_browser.browser.factory._detect_backend", return_value="patchright"), \
              patch("super_browser.browser.backends.patchright_backend.PatchrightEngine", return_value=mock_engine):
             await sb.start()
             assert sb._flow_logger is not None
@@ -202,7 +201,7 @@ class TestConfigPathFeatures:
         cfg = self._make_config(enable_security=True)
         sb = SuperBrowser(cfg)
         mock_engine, _ = _mock_engine_and_page()
-        with patch("super_browser.agent.facade._detect_backend", return_value="patchright"), \
+        with patch("super_browser.browser.factory._detect_backend", return_value="patchright"), \
              patch("super_browser.browser.backends.patchright_backend.PatchrightEngine", return_value=mock_engine):
             await sb.start()
             assert sb._security_manager is not None
@@ -216,9 +215,8 @@ class TestConfigPathFeatures:
         cfg = self._make_config(enable_recovery=True)
         sb = SuperBrowser(cfg)
         mock_engine, _ = _mock_engine_and_page()
-        with patch("super_browser.agent.facade._detect_backend", return_value="patchright"), \
-             patch("super_browser.browser.backends.patchright_backend.PatchrightEngine", return_value=mock_engine), \
-             patch("super_browser.agent.facade.SessionConfig"):
+        with patch("super_browser.browser.factory._detect_backend", return_value="patchright"), \
+             patch("super_browser.browser.backends.patchright_backend.PatchrightEngine", return_value=mock_engine):
             await sb.start()
             assert sb._coordinator is not None
             await sb.stop()
@@ -239,7 +237,7 @@ class TestFlatConfigCompat:
         cfg = Config(agent=AgentConfig(enable_stealth=True))
         sb = SuperBrowser(cfg)
         mock_engine, _ = _mock_engine_and_page()
-        with patch("super_browser.agent.facade._detect_backend", return_value="patchright"), \
+        with patch("super_browser.browser.factory._detect_backend", return_value="patchright"), \
              patch("super_browser.browser.backends.patchright_backend.PatchrightEngine", return_value=mock_engine), \
              patch("super_browser.stealth.StealthManager") as MockStealth:
             MockStealth.return_value = MagicMock()
@@ -254,9 +252,8 @@ class TestFlatConfigCompat:
         cfg = Config(agent=AgentConfig(enable_budget=True))
         sb = SuperBrowser(cfg)
         mock_engine, _ = _mock_engine_and_page()
-        with patch("super_browser.agent.facade._detect_backend", return_value="patchright"), \
-             patch("super_browser.browser.backends.patchright_backend.PatchrightEngine", return_value=mock_engine), \
-             patch("super_browser.agent.facade.SessionConfig"):
+        with patch("super_browser.browser.factory._detect_backend", return_value="patchright"), \
+             patch("super_browser.browser.backends.patchright_backend.PatchrightEngine", return_value=mock_engine):
             await sb.start()
             assert sb._budget_client is not None
             await sb.stop()
@@ -271,7 +268,7 @@ class TestFlatConfigCompat:
         )
         sb = SuperBrowser(cfg)
         mock_engine, _ = _mock_engine_and_page()
-        with patch("super_browser.agent.facade._detect_backend", return_value="patchright"), \
+        with patch("super_browser.browser.factory._detect_backend", return_value="patchright"), \
              patch("super_browser.browser.backends.patchright_backend.PatchrightEngine", return_value=mock_engine):
             await sb.start()
             assert sb._flow_logger is not None
@@ -285,7 +282,7 @@ class TestFlatConfigCompat:
         cfg = Config(agent=AgentConfig(enable_security=True))
         sb = SuperBrowser(cfg)
         mock_engine, _ = _mock_engine_and_page()
-        with patch("super_browser.agent.facade._detect_backend", return_value="patchright"), \
+        with patch("super_browser.browser.factory._detect_backend", return_value="patchright"), \
              patch("super_browser.browser.backends.patchright_backend.PatchrightEngine", return_value=mock_engine):
             await sb.start()
             assert sb._security_manager is not None
@@ -298,9 +295,8 @@ class TestFlatConfigCompat:
         cfg = Config(agent=AgentConfig(enable_recovery=True))
         sb = SuperBrowser(cfg)
         mock_engine, _ = _mock_engine_and_page()
-        with patch("super_browser.agent.facade._detect_backend", return_value="patchright"), \
-             patch("super_browser.browser.backends.patchright_backend.PatchrightEngine", return_value=mock_engine), \
-             patch("super_browser.agent.facade.SessionConfig"):
+        with patch("super_browser.browser.factory._detect_backend", return_value="patchright"), \
+             patch("super_browser.browser.backends.patchright_backend.PatchrightEngine", return_value=mock_engine):
             await sb.start()
             assert sb._coordinator is not None
             await sb.stop()
