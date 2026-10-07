@@ -12,8 +12,6 @@ from super_browser.agent.delegator import SubagentDelegator
 from super_browser.agent.loop import AgentLoop
 from super_browser.agent.registry import ToolRegistry
 from super_browser.agent.types import DelegationResult, StepEvent, StreamEvent
-from super_browser.browser.config import SessionConfig
-from super_browser.browser.engine import _detect_backend
 from super_browser.browser.session import BrowserSession
 from super_browser.browser.tabs import TabManager, TabSnapshot
 from super_browser.config import Config
@@ -109,20 +107,16 @@ class SuperBrowser:
 
     async def start(self) -> None:
         cfg = self._config
-        # -- Determine backend & session config from composition root --
-        backend_name = _detect_backend(cfg)
-        session_config = cfg.browser if isinstance(cfg, Config) else SessionConfig(headless=True)
-        if backend_name == "patchright":
-            from super_browser.browser.backends.patchright_backend import PatchrightEngine
-            self._engine = PatchrightEngine(session_config)
-            await self._engine.start()
-            self._session = self._engine.session
-            self._page = await self._engine.new_page()
-        else:
-            self._session = BrowserSession(session_config)
-            await self._session.start()
-            self._page = await self._session.new_page()
-        self._controller = MultimodalController(self._page, self._page.engine_page.cdp)
+        # -- Composition root: the factory is the only backend decision --
+        from super_browser.browser.factory import create_browser_engine
+
+        self._engine = create_browser_engine(cfg)
+        await self._engine.start()
+        self._page = await self._engine.new_page()
+        # Interim until P5 retires the legacy session seam: recovery and
+        # checkpointing still accept the Patchright session when offered.
+        self._session = getattr(self._engine, "session", None)
+        self._controller = MultimodalController(self._page, self._page.cdp)
         # Wire diagnostics listeners onto the initial page.
         self._attach_diagnostics(self._page.backend_page)
         self._running = True
