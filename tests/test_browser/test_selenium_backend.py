@@ -201,7 +201,7 @@ class TestSeleniumImportFailure:
             with pytest.raises(ImportError, match="selenium is not installed"):
                 import asyncio
 
-                asyncio.get_event_loop().run_until_complete(engine.start())  # noqa: I001
+                asyncio.new_event_loop().run_until_complete(engine.start())  # noqa: I001
 
 
 # =========================================================================
