@@ -54,6 +54,17 @@ jobs:
       - name: Install Patchright browser
         run: python -m patchright install chromium
 
+      # Hard OCR gate: provision the Tesseract system binary BEFORE pytest so
+      # tests/test_composition/test_vision_capture_regression.py's OCR vertical
+      # EXECUTES on Ubuntu instead of silently skipping. The version check
+      # fails the job if the binary is missing.
+      - name: Install Tesseract (OCR release gate)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tesseract-ocr
+          tesseract --version
+
       - name: Run tests
         run: >
           python -m pytest tests/
