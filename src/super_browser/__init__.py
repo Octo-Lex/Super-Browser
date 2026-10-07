@@ -6,7 +6,7 @@ from super_browser.agent.types import StreamEvent as StreamEvent  # noqa: F401
 from super_browser.config import Config as Config  # noqa: F401
 from super_browser.results.types import ActionResult as ActionResult  # noqa: F401
 
-__version__ = "2.13.0"
+__version__ = "2.13.1"
 
 __all__ = [
     "SuperBrowser",

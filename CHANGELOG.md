@@ -2,6 +2,13 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.13.1] — 2026-06-29
+
+### Fixed
+
+- Fixed `analyze_image` / `extract_image_text` screenshot capture when the active page object is a raw Playwright/Patchright page, which expects `type=` instead of the public `format=` wrapper argument. `_capture_region_bytes` now translates `format`→`type` (matching `PageHandle.screenshot()`), so both raw and wrapper page objects work on first use after `start()`.
+- Fixed OpenAI-compatible vision analysis providers that reject `response_format={"type":"json_object"}` (e.g. LM Studio) by retrying the analysis request without JSON-mode enforcement. The retry fires only when the failure is specifically attributable to `response_format`; arbitrary API errors are not blindly retried. Controller-side JSON parsing and raw-text fallback are preserved.
+
 The format is based on [Keep a Changelog](https://keepachangelog.com/en/1.1.0/),
 and this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 

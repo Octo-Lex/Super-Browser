@@ -611,7 +611,28 @@ class SuperBrowser:
                 int(bounds["width"]), int(bounds["height"]),
             )
 
-        img_bytes = await self._page.screenshot(full_page=full_page, format=format, quality=quality)
+        # The page object can be either a raw Playwright/Patchright Page
+        # (which takes ``type=``) or a strict PageHandle wrapper (whose public
+        # signature takes ``format=``, translating internally). Try the raw
+        # Playwright spelling first; if the wrapper rejects ``type=`` as an
+        # unexpected keyword, retry with the public ``format=`` spelling.
+        playwright_kwargs: dict[str, Any] = {"full_page": full_page}
+        public_kwargs: dict[str, Any] = {"full_page": full_page}
+        if format == "jpeg":
+            playwright_kwargs["type"] = "jpeg"
+            public_kwargs["format"] = "jpeg"
+            if quality is not None:
+                playwright_kwargs["quality"] = quality
+                public_kwargs["quality"] = quality
+        else:
+            playwright_kwargs["type"] = "png"
+            public_kwargs["format"] = "png"
+        try:
+            img_bytes = await self._page.screenshot(**playwright_kwargs)
+        except TypeError as exc:
+            if "type" not in str(exc) or "unexpected keyword" not in str(exc).lower():
+                raise
+            img_bytes = await self._page.screenshot(**public_kwargs)
 
         if crop_bounds is not None:
             from io import BytesIO

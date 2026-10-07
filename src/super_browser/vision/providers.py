@@ -277,41 +277,55 @@ class OpenAIResponseProvider(VisionProviderBase):
 
     async def analyze(self, request: VisionRequest) -> VisionResponse:
         """Answer a free-form question about the screenshot. The
-        element_description carries the question. Expects JSON output."""
+        element_description carries the question. Prefers JSON output mode,
+        but falls back to plain text when the server rejects
+        ``response_format`` (e.g. LM Studio and other OpenAI-compatible
+        servers that only accept ``json_schema`` or ``text``). The controller
+        handles both JSON and free-text answers."""
         if self._client is None:
             return VisionResponse(found=False, model=self._model, provider=self.name)
         start = time.monotonic()
+        b64 = base64.b64encode(request.screenshot).decode()
+        data_uri = f"data:{request.mime_type};base64,{b64}"
+        messages = [{
+            "role": "user",
+            "content": [
+                {"type": "image_url", "image_url": {"url": data_uri}},
+                {
+                    "type": "text",
+                    "text": (
+                        f"{request.element_description}\n\n"
+                        'Return JSON: {"answer": str, "confidence": float}'
+                    ),
+                },
+            ],
+        }]
+        common = {"model": self._model, "max_tokens": self._max_tokens, "messages": messages}
         try:
-            b64 = base64.b64encode(request.screenshot).decode()
-            data_uri = f"data:{request.mime_type};base64,{b64}"
+            # First attempt: strict JSON mode (official OpenAI).
             response = await self._client.chat.completions.create(
-                model=self._model,
-                max_tokens=self._max_tokens,
-                messages=[{
-                    "role": "user",
-                    "content": [
-                        {"type": "image_url", "image_url": {"url": data_uri}},
-                        {
-                            "type": "text",
-                            "text": (
-                                f"{request.element_description}\n\n"
-                                'Return JSON: {"answer": str, "confidence": float}'
-                            ),
-                        },
-                    ],
-                }],
-                response_format={"type": "json_object"},
-            )
-            text = response.choices[0].message.content
-            dur = (time.monotonic() - start) * 1000
-            return VisionResponse(
-                found=True, raw_response=text, model=self._model,
-                confidence=0.8, duration_ms=dur, provider=self.name,
+                **common, response_format={"type": "json_object"},
             )
         except Exception as exc:
-            logger.warning("OpenAI analyze error: %s", exc)
-            dur = (time.monotonic() - start) * 1000
-            return VisionResponse(found=False, model=self._model, duration_ms=dur, provider=self.name)
+            # Many OpenAI-compatible servers reject response_format=json_object.
+            # Retry without it — the model returns free text, which the
+            # controller parses via its non-JSON fallback path.
+            if "response_format" not in str(exc):
+                logger.warning("OpenAI analyze error: %s", exc)
+                dur = (time.monotonic() - start) * 1000
+                return VisionResponse(found=False, model=self._model, duration_ms=dur, provider=self.name)
+            try:
+                response = await self._client.chat.completions.create(**common)
+            except Exception as exc2:
+                logger.warning("OpenAI analyze fallback error: %s", exc2)
+                dur = (time.monotonic() - start) * 1000
+                return VisionResponse(found=False, model=self._model, duration_ms=dur, provider=self.name)
+        text = response.choices[0].message.content
+        dur = (time.monotonic() - start) * 1000
+        return VisionResponse(
+            found=True, raw_response=text, model=self._model,
+            confidence=0.8, duration_ms=dur, provider=self.name,
+        )
 
     async def health_check(self) -> bool:
         if self._client is None:

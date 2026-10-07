@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "superbrowser-sdk"
-version = "2.13.0"
+version = "2.13.1"
 description = "Anti-detection agent browser SDK — stealth, budget governance, security guardrails, and structured error recovery behind one async facade"
 readme = "README.md"
 license = { text = "Apache-2.0" }
@@ -98,7 +98,8 @@ mcp = [
     # MCP server (stdio). The mcp dependency is light (no transitive
     # browser deps) and is covered by tests in tests/test_mcp_*.py.
     # See docs/mcp.md and RFC #178.
-    "mcp>=1.0",
+    # MCP 2.x removed APIs used by mcp_server.py; migrate separately.
+    "mcp>=1.0,<2",
 ]
 cloud = [
     "httpx>=0.27",
