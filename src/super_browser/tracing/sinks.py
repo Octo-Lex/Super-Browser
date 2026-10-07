@@ -116,25 +116,35 @@ class PrometheusSink(TraceSink):
         self._available = False
         self._metrics: dict[str, Any] = {}
         try:
-            from prometheus_client import Counter, Gauge, Histogram
+            from prometheus_client import CollectorRegistry, Counter, Gauge, Histogram
+
+            # Use a private registry so multiple instances don't collide
+            # on the global default registry with "Duplicated timeseries".
+            self._registry = CollectorRegistry()
 
             self._metrics["cdp_calls"] = Counter(
                 "sb_cdp_calls_total", "Total CDP calls", ["method"],
+                registry=self._registry,
             )
             self._metrics["cdp_duration"] = Histogram(
                 "sb_cdp_call_duration_seconds", "CDP call duration",
+                registry=self._registry,
             )
             self._metrics["llm_tokens"] = Counter(
                 "sb_llm_tokens_used", "LLM tokens used", ["model"],
+                registry=self._registry,
             )
             self._metrics["actions"] = Counter(
                 "sb_actions_total", "Actions by tier", ["tier"],
+                registry=self._registry,
             )
             self._metrics["errors"] = Counter(
                 "sb_errors_total", "Errors by category", ["category"],
+                registry=self._registry,
             )
             self._metrics["active_sessions"] = Gauge(
                 "sb_active_sessions", "Active sessions",
+                registry=self._registry,
             )
             self._available = True
         except ImportError:
