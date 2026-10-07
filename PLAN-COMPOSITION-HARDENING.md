@@ -94,28 +94,76 @@ Order is load-bearing. Steps 1–3 precede any refactor.
    OpenAI-compatible `response_format` fallback, shipping the release (the
    branch already bumps `pyproject.toml` to 2.13.1), and validating it with
    the browser-backed step-2 gate, not only by the branch's own scripts.
-4. **PR 1: composition root + normalized page abstraction.** One engine
-   factory replaces the `start()` special case. Targets confirmed to exist:
-   `PatchrightEngine` (patchright_backend.py:262), `PlaywrightEngine`
-   (playwright_backend.py:267), `SeleniumEngine` (selenium_backend.py:402),
-   `CDPDirectEngine` (cdp_backend.py:505). Cloak is an explicit decision in
-   this PR: no `CloakEngine` exists today (only `CloakBrowserAdapter`, and
-   cloak is a mode inside `BrowserSession`), so mark it experimental /
-   non-engine for 2.14 unless wrapping the adapter is very small. The PR is
-   judged by abstraction integrity, not engine-class selection. The
-   invariant:
+4. **PR 1: composition root + normalized page abstraction.** APPROVED
+   PACKAGE (2026-10-07, items P1–P7; branch `feat/2.14-composition-root`
+   from `ecd6576`).
 
-   ```text
-   SuperBrowser._page is never an arbitrary raw backend Page.
-   It is always an EnginePage/PageHandle-compatible abstraction.
-   ```
+   - **P1 — characterization before refactoring.** Factory-matrix and
+     mode-detection tests, plus real-browser verticals for Patchright and
+     Playwright Chromium (start → navigate → screenshot → action → tab →
+     stop). Verified new composition bug on `ecd6576`:
+     `_detect_backend()` (engine.py:290-296) matches uppercase
+     `"PATCHRIGHT"`/`"CLOAK"` inside `str(mode)`, but `SessionMode` values
+     are lowercase (`"patchright_launch"`, `"cloak_launch"`), so the mode
+     check can never fire; import probing masks it by returning patchright
+     anyway. Target-behavior tests carry `xfail(strict=False)` until P2
+     lands, keeping every push green while preserving red→green evidence.
+   - **P2 — one engine factory (`browser/factory.py`); the façade stops
+     constructing `BrowserSession`.** patchright → PatchrightEngine;
+     playwright → PlaywrightEngine; selenium → SeleniumEngine;
+     cdp → CDPDirectEngine; cloak mode → PatchrightEngine + cloak
+     configuration. Cloak resolved smaller than feared (verified):
+     `PatchrightEngine.__init__` already accepts `cloak_config`
+     (patchright_backend.py:270) and threads it into the `BrowserSession`
+     it creates, whose `start()` handles `CLOAK_LAUNCH` through
+     `CloakBrowserAdapter`. No `CloakEngine` is invented. Unsupported
+     capability combinations fail explicitly.
+   - **P3 — backend-neutral normalized page; AMENDED invariant.** Do NOT
+     canonize `PageHandle`: its `engine_page` hard-codes `PatchrightPage`,
+     so making every backend a `PageHandle` would reintroduce Patchright
+     coupling under a new name. Introduce a normalized façade page (the
+     name matters less than the contract) owning exactly:
+     `engine_page` (any `EnginePage` implementation), `backend_page`
+     (optional native page/driver), `cdp` (optional coordinate/CDP
+     transport), and normalized screenshot semantics
+     `screenshot(*, full_page=False, format="png", quality=None) -> bytes`.
+     The existing xfail in `tests/test_composition/test_vision_capture_regression.py`
+     is REWRITTEN to assert this contract after `start()` and after tab
+     operations, and the xfail marker is removed in this PR.
+   - **P4 — `MultimodalController` capability-aware, not CDP-assuming.**
+     Selector actions operate on the normalized `EnginePage`; coordinate
+     actions are included only when a coordinate/CDP transport exists. When
+     absent, `_cascade()` records the tier as UNAVAILABLE — never executing
+     it and catching `AttributeError` afterwards. Capability map:
+     Patchright selector+coordinate; Playwright Chromium selector+coordinate;
+     Selenium selector (coordinate only via a future adapter); CDP direct
+     selector+coordinate.
+   - **P5 — engine-page tab ownership replaces the raw `TabManager` path.**
+     open_tab: `Engine.new_page()` → normalized page → stored under tab id.
+     switch_tab: select the stored page, rebuild the controller from its
+     capabilities. close_tab: `EnginePage.close()`. This removes raw
+     Patchright/Playwright page storage and `_attach_page()`'s
+     `context.new_cdp_session()` rebuild, leaving no second construction
+     path that can drift.
+   - **P6 — raw-page leaks are explicit acceptance criteria.** Diagnostics
+     attachment, selector-region capture, MCP `wait_for`, controller
+     construction, uploads, and tab management must close or be isolated
+     behind the normalized adapter. Diagnostics keep native-event access
+     inside the backend implementation; `SuperBrowser` itself never
+     inspects which backend it holds.
+   - **P7 — remove the 2.13.1 screenshot workaround.** The try-`type=`-
+     catch-`TypeError` probe in `_capture_region_bytes` disappears once
+     normalized screenshot semantics own the translation.
 
-   That invariant removes the `format=`/`type=` ambiguity at the
-   architectural level and deletes #246's temporary `TypeError` compatibility
-   path. Raw-page leak sites that must close with it: `facade.py:125`
-   (`engine_page.cdp`), `facade.py:127` (diagnostics on `backend_page`),
-   `facade.py:595-597` (`backend_page.query_selector`), `mcp_server.py:1436`
-   (`wait_for` reaching `backend_page`), `browser/tabs.py` (raw Pages).
+   Merge gates (all required before merge): factory matrix and
+   SessionMode-detection tests green; NormalizedPage after `start()`,
+   `open_tab()`, and `switch_tab()` with the xfail removed; real Patchright
+   and Playwright Chromium verticals green; missing coordinate transport
+   yields UNAVAILABLE, not an accidental fallback; vision regression stays
+   green (fresh-start capture, OCR vertical on Ubuntu); façade never
+   instantiates `BrowserSession` and never branches on backend name; the
+   temporary `format=`/`type=` probe is gone; entire six-cell matrix plus
+   DCO/lint/mypy green; stop on surprise.
 5. **PR 2: budget truth + abort lifecycle.** Two budget defects: the facade
    constructs the governor with the user's actual `cfg.budget`, and the
    governed LLM sits in the real `AgentLoop` call chain
