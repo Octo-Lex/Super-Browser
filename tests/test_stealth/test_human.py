@@ -154,7 +154,7 @@ class TestRandomPause:
         await adapter.random_pause()
         elapsed = time.monotonic() - start
 
-        assert elapsed >= 0.01  # at least the min pause
+        assert elapsed >= 0.008  # at least ~the min pause (tolerance for Windows timer)
 
     @pytest.mark.asyncio
     async def test_fast_preset_pause_is_quick(self):
