@@ -488,3 +488,143 @@ async def test_wait_for_preserves_native_semantics_when_available() -> None:
         "url:**/page",
         "load_state:networkidle",
     ]
+
+
+# ============================================================================
+# P2-review: normalized history navigation
+# ============================================================================
+
+
+class _PlaywrightHistoryNative:
+    """Playwright-family native: go_back/go_forward return Response | None."""
+
+    def __init__(self, back_response: Any, forward_response: Any) -> None:
+        self.backend_page = self
+        self._back = back_response
+        self._fwd = forward_response
+        self.calls: list[str] = []
+
+    async def go_back(self, wait_until: str = "load") -> Any:
+        self.calls.append("back")
+        return self._back
+
+    async def go_forward(self, wait_until: str = "load") -> Any:
+        self.calls.append("forward")
+        return self._fwd
+
+    async def reload(self, wait_until: str = "load") -> None:
+        self.calls.append("reload")
+
+    @property
+    def url(self) -> str:
+        return "https://example.com/after"
+
+
+class _SeleniumHistoryNative:
+    """Selenium WebDriver: synchronous refresh/back/forward."""
+
+    def __init__(self) -> None:
+        self.backend_page = self
+        self.calls: list[str] = []
+
+    def refresh(self) -> None:
+        self.calls.append("refresh")
+
+    def back(self) -> None:
+        self.calls.append("back")
+
+    def forward(self) -> None:
+        self.calls.append("forward")
+
+    @property
+    def url(self) -> str:
+        return "https://example.com/after"
+
+
+class _CdpHistoryTransport:
+    """Records CDP sends; returns a canned navigation history."""
+
+    def __init__(self, index: int, entries: list[dict]) -> None:
+        self._index = index
+        self._entries = entries
+        self.sent: list[tuple[str, dict]] = []
+
+    async def send(self, method: str, params: Any = None) -> Any:
+        self.sent.append((method, params or {}))
+        if method == "Page.getNavigationHistory":
+            envelope = MagicMock()
+            envelope.ok = True
+            envelope.data = {"currentIndex": self._index, "entries": self._entries}
+            return envelope
+        return MagicMock(ok=True, data={})
+
+
+async def test_history_playwright_none_response_means_no_entry() -> None:
+    engine = _PlaywrightHistoryNative(None, None)
+    page = NormalizedPage(engine_page=engine)
+
+    back = await page.go_back()
+    fwd = await page.go_forward()
+
+    assert back.navigated is False
+    assert fwd.navigated is False
+
+
+async def test_history_playwright_response_means_navigated() -> None:
+    engine = _PlaywrightHistoryNative(MagicMock(), MagicMock())
+    page = NormalizedPage(engine_page=engine)
+
+    back = await page.go_back(wait_until="domcontentloaded")
+
+    assert back.navigated is True
+    assert back.url == "https://example.com/after"
+
+
+async def test_history_reload_uses_selenium_refresh() -> None:
+    engine = _SeleniumHistoryNative()
+    page = NormalizedPage(engine_page=engine)
+
+    await page.reload()
+
+    assert engine.calls == ["refresh"]
+
+
+async def test_history_selenium_back_forward_report_navigated() -> None:
+    engine = _SeleniumHistoryNative()
+    page = NormalizedPage(engine_page=engine)
+
+    back = await page.go_back()
+    fwd = await page.go_forward()
+
+    assert back.navigated is True and fwd.navigated is True
+    assert engine.calls == ["back", "forward"]
+
+
+async def test_history_cdp_back_within_history_navigates() -> None:
+    transport = _CdpHistoryTransport(
+        index=1,
+        entries=[{"id": 11, "url": "https://example.com/first"},
+                 {"id": 22, "url": "https://example.com/second"}],
+    )
+    page = NormalizedPage(engine_page=_FakeEnginePage(), cdp=transport)
+
+    result = await page.go_back()
+
+    assert result.navigated is True
+    assert result.url == "https://example.com/first"
+    navigate_calls = [m for m, _ in transport.sent if m == "Page.navigateToHistoryEntry"]
+    assert navigate_calls == ["Page.navigateToHistoryEntry"]
+    assert transport.sent[-1][1] == {"entryId": 11}
+
+
+async def test_history_cdp_back_at_edge_reports_no_entry() -> None:
+    transport = _CdpHistoryTransport(
+        index=0,
+        entries=[{"id": 11, "url": "https://example.com/first"}],
+    )
+    page = NormalizedPage(engine_page=_FakeEnginePage(), cdp=transport)
+
+    result = await page.go_back()
+
+    assert result.navigated is False
+    assert not [m for m, _ in transport.sent if m == "Page.navigateToHistoryEntry"]

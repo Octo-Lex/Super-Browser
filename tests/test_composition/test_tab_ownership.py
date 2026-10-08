@@ -296,3 +296,82 @@ async def test_selenium_close_inactive_cannot_close_active_window() -> None:
     await page_one.close()
     assert driver.closed == ["w1"]
     assert "w2" in driver.windows
+
+
+# ============================================================================
+# P2-review: Selenium window-aware metadata + background-close restoration
+# ============================================================================
+
+
+class _WindowAwareSeleniumDriver(_FakeSeleniumDriver):
+    """Adds per-window metadata so title/current_url read per-window state."""
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.titles: dict[str, str] = {"w1": "One", "w2": "Two"}
+        self.urls: dict[str, str] = {
+            "w1": "https://example.com/one",
+            "w2": "https://example.com/two",
+        }
+
+    @property
+    def title(self) -> str:
+        return self.titles[self.current]
+
+    @property
+    def current_url(self) -> str:
+        return self.urls[self.current]
+
+    @property
+    def window_handles(self) -> list[str]:
+        return list(self.windows)
+
+
+def _two_window_pages() -> tuple[Any, Any, Any]:
+    driver = _WindowAwareSeleniumDriver()
+    page_one = _selenium_page(driver)
+    driver.open_window("w2")
+    page_two = _selenium_page(driver)
+    return driver, page_one, page_two
+
+
+async def test_selenium_metadata_is_window_aware() -> None:
+    """Two SeleniumPages must report their OWN windows' metadata — even while
+    a different window is the driver's current selection — and the prior
+    selection must be restored after the read."""
+    driver, page_one, page_two = _two_window_pages()
+    driver.switch_to.window("w2")  # w2 is current
+
+    assert await page_one.title() == "One"
+    assert page_one.url == "https://example.com/one"
+    assert await page_two.title() == "Two"
+    assert page_two.url == "https://example.com/two"
+    # The prior selection (w2) was restored after reading page_one.
+    assert driver.current == "w2"
+
+
+async def test_selenium_close_background_tab_restores_previous_window() -> None:
+    """Closing a BACKGROUND tab must not leave the driver on a webdriver-
+    chosen window — the previously selected window is restored."""
+    driver, page_one, page_two = _two_window_pages()
+    driver.switch_to.window("w2")  # w2 is current; w1 is background
+
+    await page_one.close()
+
+    assert driver.closed == ["w1"]
+    assert driver.current == "w2", (
+        "closing the background tab must restore the previously active window"
+    )
+    assert "w1" not in driver.window_handles
+
+
+async def test_selenium_close_active_window_keeps_webdriver_choice() -> None:
+    """Closing the CURRENT window needs no restore — the webdriver picks a
+    remaining window, and TabManager reactivation takes it from there."""
+    driver, page_one, page_two = _two_window_pages()
+    driver.switch_to.window("w2")  # w2 is current
+
+    await page_two.close()
+
+    assert driver.closed == ["w2"]
+    assert "w2" not in driver.windows

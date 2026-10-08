@@ -16,6 +16,8 @@ run everywhere; the real-browser smoke for Playwright Chromium lives in
 
 from __future__ import annotations
 
+from unittest.mock import MagicMock
+
 import pytest
 
 from super_browser import Config
@@ -145,3 +147,173 @@ def test_factory_unknown_backend_fails_explicitly() -> None:
 
     with pytest.raises(ValueError, match="Unsupported backend"):
         create_browser_engine(Config(browser=SessionConfig(backend="nonexistent")))
+
+
+# ============================================================================
+# P2-review: engines consume the stored (normalized) config at start()
+# ============================================================================
+
+
+class TestPlaywrightEngineStartConfig:
+    """PlaywrightEngine.start() must launch the CONFIGURED browser type with
+    the CONFIGURED headless flag — not constructor defaults plus a hardcoded
+    headless=True."""
+
+    async def test_start_launches_configured_browser_type_and_headless(self):
+        pytest.importorskip("playwright")
+        from unittest.mock import AsyncMock, patch
+
+        from super_browser.browser.backends import playwright_backend as pw_mod
+
+        engine = pw_mod.PlaywrightEngine(
+            SessionConfig(headless=False, browser_type="firefox")
+        )
+        firefox_launch = AsyncMock(
+            return_value=MagicMock(new_context=AsyncMock(return_value=MagicMock()))
+        )
+        chromium_launch = AsyncMock()
+        webkit_launch = AsyncMock()
+        fake_pw = MagicMock()
+        fake_pw.firefox.launch = firefox_launch
+        fake_pw.chromium.launch = chromium_launch
+        fake_pw.webkit.launch = webkit_launch
+
+        with patch("playwright.async_api.async_playwright") as ap_factory:
+            ap_factory.return_value.start = AsyncMock(return_value=fake_pw)
+            await engine.start()
+
+        firefox_launch.assert_awaited_once_with(headless=False)
+        chromium_launch.assert_not_called()
+        webkit_launch.assert_not_called()
+        assert engine._browser_type == "firefox"
+
+    async def test_start_launches_chromium_headless_when_configured(self):
+        pytest.importorskip("playwright")
+        from unittest.mock import AsyncMock, patch
+
+        from super_browser.browser.backends import playwright_backend as pw_mod
+
+        engine = pw_mod.PlaywrightEngine(SessionConfig(headless=True))
+        chromium_launch = AsyncMock(
+            return_value=MagicMock(new_context=AsyncMock(return_value=MagicMock()))
+        )
+        firefox_launch = AsyncMock()
+        fake_pw = MagicMock()
+        fake_pw.chromium.launch = chromium_launch
+        fake_pw.firefox.launch = firefox_launch
+        fake_pw.webkit.launch = AsyncMock()
+
+        with patch("playwright.async_api.async_playwright") as ap_factory:
+            ap_factory.return_value.start = AsyncMock(return_value=fake_pw)
+            await engine.start()
+
+        chromium_launch.assert_awaited_once_with(headless=True)
+        firefox_launch.assert_not_called()
+
+    async def test_start_rejects_unsupported_browser_type_explicitly(self):
+        pytest.importorskip("playwright")
+        from unittest.mock import AsyncMock, patch
+
+        from super_browser.browser.backends import playwright_backend as pw_mod
+
+        engine = pw_mod.PlaywrightEngine(SessionConfig(browser_type="safari"))
+        with patch("playwright.async_api.async_playwright") as ap_factory:
+            ap_factory.return_value.start = AsyncMock(return_value=MagicMock())
+            with pytest.raises(ValueError, match="Unsupported browser type"):
+                await engine.start()
+
+
+class TestSeleniumEngineStartConfig:
+    """SeleniumEngine.start() must consume the stored config: browser_type
+    selection (factory normalizes chromium→chrome) and headless arguments.
+    Selenium is not a test dependency, so the launcher layer is mocked."""
+
+    def _fake_selenium_env(self, monkeypatch):
+        import sys
+        import types
+
+        from super_browser.browser.backends import selenium_backend as se
+
+        monkeypatch.setattr(se, "_SELENIUM_AVAILABLE", True)
+
+        chrome_options_inst = MagicMock()
+        chrome_options_inst.add_argument = MagicMock()
+        chrome_options_cls = MagicMock(return_value=chrome_options_inst)
+        mod_chrome_options = types.ModuleType("selenium.webdriver.chrome.options")
+        mod_chrome_options.Options = chrome_options_cls
+        mod_chrome_service = types.ModuleType("selenium.webdriver.chrome.service")
+        mod_chrome_service.Service = MagicMock()
+
+        firefox_options_inst = MagicMock()
+        firefox_options_inst.add_argument = MagicMock()
+        firefox_options_cls = MagicMock(return_value=firefox_options_inst)
+        mod_firefox_options = types.ModuleType("selenium.webdriver.firefox.options")
+        mod_firefox_options.Options = firefox_options_cls
+        mod_firefox_service = types.ModuleType("selenium.webdriver.firefox.service")
+        mod_firefox_service.Service = MagicMock()
+
+        fake_webdriver = types.SimpleNamespace(
+            Chrome=MagicMock(return_value=MagicMock()),
+            Firefox=MagicMock(return_value=MagicMock()),
+        )
+
+        for name, mod in {
+            "selenium.webdriver.chrome.options": mod_chrome_options,
+            "selenium.webdriver.chrome.service": mod_chrome_service,
+            "selenium.webdriver.firefox.options": mod_firefox_options,
+            "selenium.webdriver.firefox.service": mod_firefox_service,
+            # webdriver_manager import must fail → the no-Service fallback.
+            "webdriver_manager": None,
+            "webdriver_manager.chrome": None,
+        }.items():
+            monkeypatch.setitem(sys.modules, name, mod)
+
+        monkeypatch.setattr(se, "webdriver", fake_webdriver)
+        return chrome_options_inst, firefox_options_inst, fake_webdriver
+
+    async def test_selenium_start_uses_chrome_with_configured_headless(
+        self, monkeypatch
+    ):
+        chrome_options_inst, _, fake_webdriver = self._fake_selenium_env(monkeypatch)
+        from super_browser.browser.factory import create_browser_engine
+
+        engine = create_browser_engine(
+            Config(browser=SessionConfig(backend="selenium", headless=True))
+        )
+        await engine.start()
+
+        chrome_options_inst.add_argument.assert_any_call("--headless=new")
+        fake_webdriver.Chrome.assert_called_once()
+
+    async def test_selenium_start_uses_configured_firefox_headless(
+        self, monkeypatch
+    ):
+        _, firefox_options_inst, fake_webdriver = self._fake_selenium_env(monkeypatch)
+        from super_browser.browser.factory import create_browser_engine
+
+        engine = create_browser_engine(
+            Config(
+                browser=SessionConfig(
+                    backend="selenium", browser_type="firefox", headless=True
+                )
+            )
+        )
+        await engine.start()
+
+        firefox_options_inst.add_argument.assert_any_call("-headless")
+        fake_webdriver.Firefox.assert_called_once()
+        fake_webdriver.Chrome.assert_not_called()
+
+    async def test_selenium_safari_headless_fails_explicitly(self, monkeypatch):
+        self._fake_selenium_env(monkeypatch)
+        from super_browser.browser.factory import create_browser_engine
+
+        engine = create_browser_engine(
+            Config(
+                browser=SessionConfig(
+                    backend="selenium", browser_type="safari", headless=True
+                )
+            )
+        )
+        with pytest.raises(ValueError, match="does not support headless"):
+            await engine.start()

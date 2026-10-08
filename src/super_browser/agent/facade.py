@@ -297,8 +297,10 @@ class SuperBrowser:
             return sec
         wait_until = params["wait_until"]
         start = time.monotonic()
-        response = await self._page.go_back(wait_until=wait_until)
-        if response is None:
+        # P2-review: HistoryResult — the façade no longer infers semantics
+        # from Playwright's Response | None.
+        history = await self._page.go_back(wait_until=wait_until)
+        if not history.navigated:
             return action_result(ok=False, error=ActionError(
                 ErrorCategory.PAGE_ERROR, "No history entry to go back to"))
         return timed_action_result(
@@ -316,8 +318,8 @@ class SuperBrowser:
             return sec
         wait_until = params["wait_until"]
         start = time.monotonic()
-        response = await self._page.go_forward(wait_until=wait_until)
-        if response is None:
+        history = await self._page.go_forward(wait_until=wait_until)
+        if not history.navigated:
             return action_result(ok=False, error=ActionError(
                 ErrorCategory.PAGE_ERROR, "No history entry to go forward to"))
         return timed_action_result(

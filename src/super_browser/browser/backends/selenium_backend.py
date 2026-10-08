@@ -189,30 +189,68 @@ class SeleniumPage:
 
         await asyncio.to_thread(_sync)
 
+    def _read_on_own_window(self, read: Any) -> Any:
+        """Read driver state from THIS page's window, restoring selection.
+
+        Selenium exposes ``title``/``current_url`` for the driver's *current*
+        window only. Without the handle switch, every SeleniumPage would
+        report whatever window happens to be selected (P2-review fix).
+        """
+        driver = self._driver
+        previous = getattr(driver, "current_window_handle", None)
+        switched = False
+        if (
+            self._window_handle is not None
+            and previous is not None
+            and previous != self._window_handle
+        ):
+            driver.switch_to.window(self._window_handle)
+            switched = True
+        try:
+            return read()
+        finally:
+            if switched:
+                try:
+                    driver.switch_to.window(previous)
+                except Exception:
+                    pass  # previous window vanished mid-read — keep new state
+
     async def title(self) -> str:
-        """Get page title."""
-        return await asyncio.to_thread(lambda: self._driver.title)
+        """Get THIS page's window title (handle-aware)."""
+        return await asyncio.to_thread(
+            lambda: self._read_on_own_window(lambda: self._driver.title)
+        )
 
     @property
     def url(self) -> str:
-        """Get current page URL."""
-        return self._driver.current_url
+        """Get THIS page's window URL (handle-aware)."""
+        return self._read_on_own_window(lambda: self._driver.current_url)
 
     async def close(self) -> None:
         """Close THIS page's window.
 
         P5: Selenium's ``driver.close()`` closes whatever window is current,
-        so the page activates its own handle first — closing a background tab
-        must not close the active one.
+        so the page activates its own handle first. P2-review fix: the
+        previously selected window is restored afterwards (when it still
+        exists), so closing a background tab leaves the driver on the
+        logical active window instead of a webdriver-chosen one.
         """
 
         def _sync() -> None:
-            if (
+            previous = self._driver.current_window_handle
+            switching = (
                 self._window_handle is not None
-                and self._driver.current_window_handle != self._window_handle
-            ):
+                and previous != self._window_handle
+            )
+            if switching:
                 self._driver.switch_to.window(self._window_handle)
             self._driver.close()
+            if switching:
+                try:
+                    if previous in set(self._driver.window_handles):
+                        self._driver.switch_to.window(previous)
+                except Exception:
+                    pass  # no windows remain — nothing to restore
 
         await asyncio.to_thread(_sync)
 
@@ -456,11 +494,13 @@ class SeleniumEngine:
                 "pip install selenium"
             )
 
+        effective_cfg = config or self._config
         effective_type = (
-            getattr(config, "browser_type", None)
-            if config is not None
-            else None
-        ) or self._browser_type
+            getattr(effective_cfg, "browser_type", None) or self._browser_type
+        )
+        # P2-review fix: headless is honored from the stored (normalized)
+        # config instead of being ignored.
+        headless = bool(getattr(effective_cfg, "headless", False))
 
         driver: Any = None
 
@@ -472,6 +512,8 @@ class SeleniumEngine:
                 options = Options()
                 options.add_argument("--no-sandbox")
                 options.add_argument("--disable-dev-shm-usage")
+                if headless:
+                    options.add_argument("--headless=new")
 
                 # Try ChromeDriverManager first, fall back to default
                 try:
@@ -496,6 +538,9 @@ class SeleniumEngine:
                 from selenium.webdriver.firefox.service import Service  # type: ignore[assignment]
 
                 options = Options()
+                if headless:
+                    # Firefox headless spelling (single dash).
+                    options.add_argument("-headless")
                 driver = webdriver.Firefox(options=options)  # type: ignore[arg-type]
             except Exception as exc:
                 raise RuntimeError(
@@ -503,6 +548,12 @@ class SeleniumEngine:
                 ) from exc
 
         elif effective_type == "safari":
+            if headless:
+                # Fail explicitly — Safari WebDriver has no headless mode.
+                raise ValueError(
+                    "Safari does not support headless mode; "
+                    "set browser.headless=False or choose another browser_type."
+                )
             try:
                 driver = webdriver.Safari()
             except Exception as exc:

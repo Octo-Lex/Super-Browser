@@ -302,8 +302,20 @@ class PlaywrightEngine:
     # -- BrowserEngine protocol ------------------------------------
 
     async def start(self, config: Any = None) -> None:
-        """Launch or connect to the browser."""
+        """Launch or connect to the browser.
+
+        P2-review fix: consumes the stored (normalized) SessionConfig —
+        ``browser_type`` and ``headless`` — instead of constructor defaults
+        and a hardcoded headless flag. Unsupported browser types fail
+        explicitly rather than silently launching Chromium.
+        """
         from playwright.async_api import async_playwright
+
+        effective_cfg = config or self._config
+        browser_type = (
+            getattr(effective_cfg, "browser_type", None) or self._browser_type
+        )
+        headless = bool(getattr(effective_cfg, "headless", True))
 
         self._playwright = await async_playwright().start()
 
@@ -312,10 +324,14 @@ class PlaywrightEngine:
             "firefox": self._playwright.firefox.launch,
             "webkit": self._playwright.webkit.launch,
         }
-        launcher = launch_method.get(
-            self._browser_type, self._playwright.chromium.launch
-        )
-        self._browser = await launcher(headless=True)
+        if browser_type not in launch_method:
+            raise ValueError(
+                f"Unsupported browser type for the playwright backend: "
+                f"{browser_type!r}. Choose from: chromium, firefox, webkit."
+            )
+        launcher = launch_method[browser_type]
+        self._browser_type = browser_type
+        self._browser = await launcher(headless=headless)
         self._context = await self._browser.new_context()
 
     async def stop(self) -> None:

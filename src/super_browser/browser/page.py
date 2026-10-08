@@ -189,6 +189,24 @@ def _unwrap_evaluate(raw: Any) -> Any:
     return raw
 
 
+class HistoryResult:
+    """Normalized outcome of a history navigation (P2-review fix).
+
+    ``navigated`` is False when the backend reports no entry in that
+    direction (e.g. Playwright returning ``None`` from ``go_back``, or CDP
+    reporting the edge of the navigation history). ``url`` is the page URL
+    after the attempt. Facades consume this instead of inferring semantics
+    from Playwright's ``Response | None``.
+    """
+
+    def __init__(self, navigated: bool, url: str = "") -> None:
+        self.navigated = navigated
+        self.url = url
+
+    def __repr__(self) -> str:
+        return f"HistoryResult(navigated={self.navigated!r}, url={self.url!r})"
+
+
 class NormalizedPage:
     """Backend-neutral façade page — the object stored in ``SuperBrowser._page``.
 
@@ -276,6 +294,9 @@ class NormalizedPage:
             buffer.attach(native)
 
     def _require_native(self, operation: str) -> Any:
+        """Raise a structured error when this backend has no native page.
+
+        Kept for adapter methods that cannot degrade (P6 surfaces)."""
         if self._backend_page is None:
             raise NotImplementedError(
                 f"{operation} requires a native page; "
@@ -284,14 +305,72 @@ class NormalizedPage:
         return self._backend_page
 
     async def reload(self, wait_until: str = "load") -> Any:
-        return await self._require_native("reload").reload(wait_until=wait_until)
+        """Reload the page, normalizing backend semantics (P2-review fix).
 
-    async def go_back(self, wait_until: str = "load") -> Any:
-        return await self._require_native("go_back").go_back(wait_until=wait_until)
+        - Playwright/Patchright: native ``reload(wait_until=...)``.
+        - Selenium: ``driver.refresh()`` via ``asyncio.to_thread`` (no
+          ``wait_until`` concept — the call returns when the driver reports
+          readiness).
+        - CDP-direct: ``Page.reload`` over the transport.
+        """
+        native = self._backend_page
+        if callable(getattr(native, "reload", None)):
+            return await native.reload(wait_until=wait_until)
+        if callable(getattr(native, "refresh", None)):
+            await asyncio.to_thread(native.refresh)
+            return None
+        if self._cdp is not None:
+            await self._cdp.send("Page.reload", {})
+            return None
+        raise NotImplementedError(
+            "reload requires a native page or a CDP transport"
+        )
 
-    async def go_forward(self, wait_until: str = "load") -> Any:
-        return await self._require_native("go_forward").go_forward(
-            wait_until=wait_until
+    async def go_back(self, wait_until: str = "load") -> HistoryResult:
+        return await self._navigate_history("back", wait_until)
+
+    async def go_forward(self, wait_until: str = "load") -> HistoryResult:
+        return await self._navigate_history("forward", wait_until)
+
+    async def _navigate_history(self, direction: str, wait_until: str) -> HistoryResult:
+        """Navigate history with normalized semantics (P2-review fix).
+
+        - Playwright/Patchright: native ``go_back``/``go_forward`` returning
+          ``Response | None`` (None = no entry).
+        - Selenium: ``driver.back()``/``driver.forward()`` via
+          ``asyncio.to_thread`` (the WebDriver cannot report the edge, so the
+          result is reported as navigated).
+        - CDP-direct: ``Page.getNavigationHistory`` +
+          ``Page.navigateToHistoryEntry``, with a real edge check.
+        """
+        native = self._backend_page
+        native_method = "go_back" if direction == "back" else "go_forward"
+        if callable(getattr(native, native_method, None)):
+            response = await getattr(native, native_method)(wait_until=wait_until)
+            return HistoryResult(
+                navigated=response is not None, url=self._engine_page.url
+            )
+        if callable(getattr(native, direction, None)):
+            await asyncio.to_thread(getattr(native, direction))
+            return HistoryResult(navigated=True, url=self._engine_page.url)
+        if self._cdp is not None:
+            history = await self._cdp.send("Page.getNavigationHistory", {})
+            data = (history.data or {}) if getattr(history, "ok", False) else {}
+            index = data.get("currentIndex", 0)
+            entries = data.get("entries", [])
+            target = index - 1 if direction == "back" else index + 1
+            if 0 <= target < len(entries):
+                entry = entries[target]
+                await self._cdp.send(
+                    "Page.navigateToHistoryEntry",
+                    {"entryId": entry.get("id")},
+                )
+                return HistoryResult(
+                    navigated=True, url=entry.get("url", self._engine_page.url)
+                )
+            return HistoryResult(navigated=False, url=self._engine_page.url)
+        raise NotImplementedError(
+            "history navigation requires a native page or a CDP transport"
         )
 
     async def selector_bounds(
