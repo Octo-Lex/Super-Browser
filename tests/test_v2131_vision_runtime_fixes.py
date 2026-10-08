@@ -30,18 +30,18 @@ from super_browser.interaction.types import VisionRequest
 
 
 class _RawPlaywrightPage:
-    """Mimics a raw Playwright/Patchright Page: screenshot() takes ``type=``."""
+    """Mimics a raw Playwright/Patchright Page in the P7 world.
+
+    Since the P3 engine-page fix, raw-style pages accept the canonical
+    ``format=`` vocabulary directly — the 2.13.1 ``type=``-only behavior
+    this fake used to simulate is gone.
+    """
 
     def __init__(self, png_bytes: bytes = b"\x89PNG fake") -> None:
         self._png = png_bytes
         self.last_kwargs: dict[str, Any] = {}
 
     async def screenshot(self, **kwargs: Any) -> bytes:
-        # Playwright raises if it gets an unknown kwarg like 'format'.
-        if "format" in kwargs:
-            raise TypeError(
-                "screenshot() got an unexpected keyword argument 'format'"
-            )
         self.last_kwargs = kwargs
         return self._png
 
@@ -77,25 +77,29 @@ class _StrictPageHandleLike:
 
 
 class TestCaptureRegionKeywordCompat:
-    """_capture_region_bytes must work with raw (type=) and wrapper (format=) pages."""
+    """P7: _capture_region_bytes speaks ONE canonical vocabulary.
+
+    The 2.13.1 mechanism (try ``type=`` first, retry ``format=`` on
+    TypeError) was removed — NormalizedPage owns screenshot semantics, so
+    every page object receives ``format=`` and ``quality=`` directly.
+    """
 
     @pytest.mark.asyncio
-    async def test_raw_page_uses_type_not_format(self):
+    async def test_capture_forwards_canonical_format_kwargs(self):
         from super_browser import SuperBrowser
 
         sb = SuperBrowser()
         raw = _RawPlaywrightPage()
         sb._page = raw
-        # Must not raise.
         img_bytes, mime = await sb._capture_region_bytes(format="png")
         assert img_bytes == b"\x89PNG fake"
         assert mime == "image/png"
-        # The raw page received type=, never format=.
-        assert raw.last_kwargs.get("type") == "png"
-        assert "format" not in raw.last_kwargs
+        assert raw.last_kwargs.get("format") == "png"
+        assert raw.last_kwargs.get("full_page") is False
+        assert "type" not in raw.last_kwargs
 
     @pytest.mark.asyncio
-    async def test_raw_page_jpeg_uses_type_jpeg(self):
+    async def test_capture_forwards_jpeg_with_quality(self):
         from super_browser import SuperBrowser
 
         sb = SuperBrowser()
@@ -103,7 +107,7 @@ class TestCaptureRegionKeywordCompat:
         sb._page = raw
         img_bytes, mime = await sb._capture_region_bytes(format="jpeg", quality=70)
         assert mime == "image/jpeg"
-        assert raw.last_kwargs.get("type") == "jpeg"
+        assert raw.last_kwargs.get("format") == "jpeg"
         assert raw.last_kwargs.get("quality") == 70
 
     @pytest.mark.asyncio

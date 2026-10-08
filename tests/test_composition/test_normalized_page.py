@@ -2,8 +2,9 @@
 
 Covers the wrapper contract itself (PLAN-COMPOSITION-HARDENING.md step 4,
 P3): engine_page identity preservation, backend_page/cdp derivation and
-override, canonical screenshot vocabulary (format= with the internal type=
-compatibility alias), Selenium PNG→JPEG handling, and is_alive behavior
+override, canonical screenshot vocabulary (format= only — the 2.13.1
+type= alias was removed in P7), Selenium PNG→JPEG handling, and is_alive
+behavior
 when the native object has or lacks is_closed().
 
 These are pure unit tests — a fake engine page is sufficient because the
@@ -148,15 +149,24 @@ async def test_screenshot_forwards_jpeg_and_quality() -> None:
     assert engine.last_screenshot_kwargs["quality"] == 70
 
 
-async def test_screenshot_accepts_internal_type_alias() -> None:
-    """The 2.13.1 probe passes type=; the wrapper maps it to format= so the
-    probe does not throw on every screenshot (P7 deletes the probe)."""
+async def test_screenshot_rejects_removed_type_alias() -> None:
+    """P7 removed the 2.13.1 type= alias: the canonical vocabulary is
+    format= only, and the stale spelling is a hard TypeError."""
     engine = _FakeEnginePage()
     page = NormalizedPage(engine_page=engine)
 
-    await page.screenshot(type="jpeg", quality=80)
-    assert engine.last_screenshot_kwargs["format"] == "jpeg"
-    assert "type" not in engine.last_screenshot_kwargs
+    with pytest.raises(TypeError):
+        await page.screenshot(type="jpeg", quality=80)
+    assert engine.last_screenshot_kwargs == {}
+
+
+async def test_screenshot_quality_not_forwarded_for_png() -> None:
+    """Playwright rejects PNG screenshots carrying a quality value."""
+    engine = _FakeEnginePage()
+    page = NormalizedPage(engine_page=engine)
+
+    await page.screenshot(format="png", quality=80)
+    assert "quality" not in engine.last_screenshot_kwargs
 
 
 async def test_selenium_png_output_reencoded_to_jpeg() -> None:

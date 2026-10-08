@@ -206,9 +206,9 @@ class NormalizedPage:
     Screenshot semantics are canonical here: callers pass
     ``format="png" | "jpeg"``; the Playwright-family engine pages speak
     ``format=`` natively as of P3, and Selenium's PNG-only output is
-    re-encoded via the existing Pillow helper when available. The internal
-    ``type=`` spelling is accepted as a compatibility alias so the 2.13.1
-    probe in ``_capture_region_bytes`` keeps working until P7 deletes it.
+    re-encoded via the existing Pillow helper when available. The 2.13.1
+    ``type=`` compatibility alias was removed in P7 together with the
+    façade probe it served.
 
     ``PageHandle`` remains the legacy Patchright tab adapter until P5; it is
     no longer stored in ``SuperBrowser._page``.
@@ -450,24 +450,19 @@ class NormalizedPage:
         full_page: bool = False,
         format: str = "png",
         quality: Optional[int] = None,
-        **kwargs: Any,
     ) -> bytes:
         """Canonical screenshot: ``format="png" | "jpeg"``.
 
-        The engine page receives the normalized vocabulary. The internal
-        ``type=`` spelling is accepted as a compatibility alias (mapped to
-        ``format`` when no explicit format was given). Selenium's PNG-only
-        output is re-encoded to JPEG via Pillow when requested and available.
+        ``quality`` is forwarded only for JPEG — Playwright rejects PNG
+        screenshots carrying a quality value. Selenium's PNG-only output is
+        re-encoded to JPEG via the existing Pillow helper when requested and
+        available.
         """
-        compat_type = kwargs.pop("type", None)
-        if compat_type in ("png", "jpeg") and format == "png":
-            format = compat_type
-        kwargs["full_page"] = full_page
+        kwargs: dict[str, Any] = {"full_page": full_page, "format": format}
         if path:
             kwargs["path"] = path
-        kwargs["format"] = format
-        if quality is not None:
-            kwargs.setdefault("quality", quality)
+        if format == "jpeg" and quality is not None:
+            kwargs["quality"] = quality
         raw = await self._engine_page.screenshot(**kwargs)
         if (
             format == "jpeg"
