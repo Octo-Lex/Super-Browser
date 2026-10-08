@@ -28,6 +28,12 @@ class SnapshotProvider:
         self._stealth_bridge = stealth_bridge
 
     async def capture_ax_only(self, url: str, title: str) -> AXSnapshot:
+        # P4: explicit degradation — with neither a CDP transport nor a
+        # stealth bridge there is no AX source; return a valid empty snapshot
+        # instead of dereferencing None. A Selenium Chrome stealth bridge can
+        # still supply AX metadata even when coordinate dispatch is absent.
+        if self._stealth_bridge is None and self._cdp is None:
+            return AXSnapshot(url=url, title=title, nodes={}, token_count=0)
         if self._stealth_bridge is not None:
             raw_data = await self._stealth_bridge.get_ax_tree()
             # get_ax_tree() returns dict with 'nodes' directly.

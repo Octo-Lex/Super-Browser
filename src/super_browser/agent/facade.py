@@ -120,7 +120,7 @@ class SuperBrowser:
         # Interim until P5 retires the legacy session seam: recovery and
         # checkpointing still accept the Patchright session when offered.
         self._session = getattr(self._engine, "session", None)
-        self._controller = MultimodalController(self._page, self._page.cdp)
+        self._controller = MultimodalController(self._page)  # P4: transport derived from the normalized page
         # Wire diagnostics listeners onto the initial page.
         self._attach_diagnostics(self._page.backend_page)
         self._running = True
@@ -858,7 +858,7 @@ class SuperBrowser:
             backend_page=handle.backend_page,
             cdp=handle.cdp,
         )
-        self._controller = MultimodalController(self._page, self._page.cdp)
+        self._controller = MultimodalController(self._page)  # P4: transport derived from the normalized page
         # Wire diagnostics listeners onto the new tab/switched page.
         self._attach_diagnostics(self._page.backend_page)
 

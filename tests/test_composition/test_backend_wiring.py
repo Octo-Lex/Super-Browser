@@ -106,10 +106,9 @@ async def test_patchright_facade_lifecycle(tmp_path: Path) -> None:
 @pytest.mark.integration
 @pytest.mark.xfail(
     strict=False,
-    reason="P3–P5: P2 lands factory routing (see test_playwright_engine_smoke), "
-    "but the full façade path still needs the normalized page (P3), the "
-    "controller's CDPBridge/capability contract (P4), and engine-page tab "
-    "ownership (P5). observe/open_tab remain Patchright-shaped until then.",
+    reason="P5: legacy _session/TabManager ownership blocks Playwright tab "
+    "operations. P4 made the page representation and transport real — the "
+    "pre-tab path is hard-green in test_controller_capability.py.",
 )
 async def test_playwright_facade_lifecycle(tmp_path: Path) -> None:
     """backend='playwright' must construct PlaywrightEngine and work end to end."""

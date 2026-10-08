@@ -13,7 +13,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable, Optional
 
-from super_browser.browser.cdp import CDPResult
+from super_browser.browser.cdp import CDPBridge, CDPResult
+from super_browser.browser.config import SessionConfig
 from super_browser.browser.engine import EngineCapabilities
 
 logger = logging.getLogger(__name__)
@@ -97,6 +98,7 @@ class PlaywrightPage:
         self._context = context
         self._stealth_bridge: Optional[PlaywrightStealthBridge] = None
         self._cdp_session: Any = None
+        self._cdp_bridge: Optional[CDPBridge] = None
 
     async def _ensure_cdp(self) -> None:
         """Lazily create CDP session for Chromium pages."""
@@ -108,6 +110,10 @@ class PlaywrightPage:
             try:
                 self._cdp_session = await self._context.new_cdp_session(self._page)
                 self._stealth_bridge = PlaywrightStealthBridge(self._cdp_session)
+                # P4: the controller-facing .cdp is a real CDPBridge. The raw
+                # Playwright CDP session stays with the stealth bridge, whose
+                # cdp_send path consumes it directly.
+                self._cdp_bridge = CDPBridge(self._cdp_session, SessionConfig())
             except Exception as exc:
                 logger.warning("Failed to create CDP session: %s", exc)
 
@@ -240,9 +246,14 @@ class PlaywrightPage:
         return self._stealth_bridge
 
     @property
-    def cdp(self) -> Any:
-        """CDP session for Chromium, ``None`` for Firefox/WebKit."""
-        return self._cdp_session
+    def cdp(self) -> Optional[CDPBridge]:
+        """Controller-facing CDP bridge for Chromium; ``None`` for Firefox/WebKit.
+
+        P4: this is a real :class:`CDPBridge` wrapping the raw Playwright CDP
+        session (which the stealth bridge retains), so transport presence —
+        not backend name — is the capability signal.
+        """
+        return self._cdp_bridge
 
     @property
     def backend_page(self) -> Any:
