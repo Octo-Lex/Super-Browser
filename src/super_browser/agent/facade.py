@@ -104,9 +104,10 @@ class SuperBrowser:
     def _attach_diagnostics(self, raw_page: Any) -> None:
         """Wire diagnostics listeners onto a raw page.
 
-        Called from :meth:`start` (initial page) and :meth:`_attach_page`
-        (tab open/switch). Idempotent by raw-page identity inside the buffer,
-        so it is safe to call on every tab switch.
+        .. deprecated:: P6
+            Superseded by ``NormalizedPage.attach_diagnostics`` — the façade
+            must not hand raw pages to subsystems. Kept only for tests that
+            exercise the buffer directly.
         """
         self._diagnostics.attach(raw_page)
 
@@ -129,7 +130,7 @@ class SuperBrowser:
         self._session = getattr(self._engine, "session", None)
         self._controller = MultimodalController(self._page)  # P4: transport derived from the normalized page
         # Wire diagnostics listeners onto the initial page.
-        self._attach_diagnostics(self._page.backend_page)
+        self._page.attach_diagnostics(self._diagnostics)
         self._running = True
         self._register_builtin_tools()
         self._configure_verification()
@@ -280,7 +281,7 @@ class SuperBrowser:
             return sec
         wait_until = params["wait_until"]
         start = time.monotonic()
-        await self._page.backend_page.reload(wait_until=wait_until)
+        await self._page.reload(wait_until=wait_until)
         return timed_action_result(
             ok=True, start_ns=start, data={"url": self._page.url},
             method=ActionMethod.SELECTOR,
@@ -296,7 +297,7 @@ class SuperBrowser:
             return sec
         wait_until = params["wait_until"]
         start = time.monotonic()
-        response = await self._page.backend_page.go_back(wait_until=wait_until)
+        response = await self._page.go_back(wait_until=wait_until)
         if response is None:
             return action_result(ok=False, error=ActionError(
                 ErrorCategory.PAGE_ERROR, "No history entry to go back to"))
@@ -315,7 +316,7 @@ class SuperBrowser:
             return sec
         wait_until = params["wait_until"]
         start = time.monotonic()
-        response = await self._page.backend_page.go_forward(wait_until=wait_until)
+        response = await self._page.go_forward(wait_until=wait_until)
         if response is None:
             return action_result(ok=False, error=ActionError(
                 ErrorCategory.PAGE_ERROR, "No history entry to go forward to"))
@@ -600,25 +601,16 @@ class SuperBrowser:
         """Capture a screenshot, cropped to ``selector``/``bounds`` if given.
 
         Returns ``(image_bytes, mime_type)``. The crop region is resolved via
-        the raw backend page (``backend_page``), not the engine wrapper, which
-        does not expose ``query_selector``. Reused by OCR and vision analysis.
+        the backend-neutral ``selector_bounds`` adapter (P6). Reused by OCR
+        and vision analysis.
         """
         crop_bounds: Optional[tuple[int, int, int, int]] = None
 
         if selector is not None:
             try:
-                raw_page = getattr(self._page, "backend_page", None)
-                if raw_page is not None:
-                    el = await raw_page.query_selector(selector)
-                    if el is not None:
-                        box = await el.bounding_box()
-                        if box is not None and box["width"] > 0 and box["height"] > 0:
-                            crop_bounds = (
-                                int(box["x"]), int(box["y"]),
-                                int(box["width"]), int(box["height"]),
-                            )
+                crop_bounds = await self._page.selector_bounds(selector)
             except Exception:
-                pass  # best-effort; fall through to uncropped capture
+                crop_bounds = None  # best-effort; fall through to uncropped capture
 
         if bounds is not None:
             crop_bounds = (
@@ -860,8 +852,9 @@ class SuperBrowser:
         """
         self._page = page
         self._controller = MultimodalController(page)
-        # P6 still owns closing this native-page access.
-        self._attach_diagnostics(page.backend_page)
+        # P6: diagnostics attach through the adapter; native access stays
+        # inside NormalizedPage.
+        page.attach_diagnostics(self._diagnostics)
 
     # -- Multi-Tab --
 
@@ -1093,13 +1086,6 @@ class SuperBrowser:
             return timed_action_result(ok=True, start_ns=start, data={"depth": len(self._frame_stack)})
         return timed_action_result(ok=True, start_ns=start, data={"depth": 0})
 
-    def _current_frame(self) -> Any:
-        """Get the current frame (top of stack) or the raw page."""
-        if self._frame_stack:
-            return self._frame_stack[-1]
-        return self._page.engine_page.backend_page if self._page else None
-        # NOTE: Returns underlying Playwright Page for backward compat.
-
     # -- Shadow DOM --
 
     async def query_shadow(self, host_selector: str, inner_selector: str) -> ActionResult:
@@ -1298,7 +1284,7 @@ class SuperBrowser:
         from super_browser.verification.types import VerifierConfig as VC
         vconfig = config or VC()
         verifier = VisualVerifier(
-            cdp=self._page.engine_page.cdp,
+            cdp=self._page.cdp,
             snapshot_provider=self._controller._snapshot_provider,
             config=vconfig,
         )
@@ -1412,7 +1398,7 @@ class SuperBrowser:
             from super_browser.verification import VisualVerifier
             from super_browser.verification.types import VerifierConfig as VC
             verifier = VisualVerifier(
-                cdp=self._page.engine_page.cdp,
+                cdp=self._page.cdp,
                 snapshot_provider=self._controller._snapshot_provider,
                 config=VC(),
             )
@@ -1438,11 +1424,11 @@ class SuperBrowser:
             return
         from super_browser.stealth import StealthManager
         stealth_config = self._config.stealth
-        stealth_bridge = getattr(self._page.engine_page, "stealth_bridge", None)
+        stealth_bridge = self._page.stealth_bridge
         self._stealth_manager = StealthManager(
             stealth_config,
             stealth_bridge=stealth_bridge,
-            cdp=self._page.engine_page.cdp if stealth_bridge is None else None,
+            cdp=self._page.cdp if stealth_bridge is None else None,
             page=self._page.engine_page,
         )
         self._loop_stealth = self._stealth_manager
@@ -1457,7 +1443,7 @@ class SuperBrowser:
         skills_dir = Path(skills_dir_str) if skills_dir_str else None
         self._skill_registry = SkillRegistry(skills_dir=skills_dir)
         if self._page and hasattr(self._page, "cdp"):
-            self._skill_registry.set_cdp(self._page.engine_page.cdp)
+            self._skill_registry.set_cdp(self._page.cdp)
 
     async def learn_from_trajectory(
         self, domain: str, task_description: str, actions_taken: list[str],
@@ -1485,7 +1471,7 @@ class SuperBrowser:
         start = time.monotonic()
         if not self._page:
             return action_result(ok=False, error=ActionError(ErrorCategory.BROWSER_CRASH, "Browser not started."))
-        stealth_bridge = getattr(self._page.engine_page, "stealth_bridge", None)
+        stealth_bridge = self._page.stealth_bridge
         if stealth_bridge is None:
             return action_result(ok=False, error=ActionError(ErrorCategory.VALIDATION, "No stealth bridge available for cookie access."))
         params = {"path": path}
@@ -1531,7 +1517,7 @@ class SuperBrowser:
         start = time.monotonic()
         if not self._page:
             return action_result(ok=False, error=ActionError(ErrorCategory.BROWSER_CRASH, "Browser not started."))
-        stealth_bridge = getattr(self._page.engine_page, "stealth_bridge", None)
+        stealth_bridge = self._page.stealth_bridge
         if stealth_bridge is None:
             return action_result(ok=False, error=ActionError(ErrorCategory.VALIDATION, "No stealth bridge available for cookie access."))
         params = {"path": path}
@@ -1586,8 +1572,8 @@ class SuperBrowser:
         if self._event_bus is None:
             self._event_bus = EventBus()
         cdp = None
-        if self._page and hasattr(self._page, "engine_page"):
-            cdp = self._page.engine_page.cdp
+        if self._page:
+            cdp = self._page.cdp
         self._recorder = SessionRecorder(
             self._event_bus, cdp, max_screenshots=max_screenshots,
         )

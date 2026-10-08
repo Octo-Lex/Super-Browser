@@ -1,8 +1,13 @@
-"""PageHandle — wraps a Patchright Page with CDP bridge access."""
+"""PageHandle — legacy Patchright tab adapter — and NormalizedPage, the
+backend-neutral façade page (PR 1 P3/P6)."""
 
 from __future__ import annotations
 
+import asyncio
+import fnmatch
 import io
+import json
+import time
 from typing import TYPE_CHECKING, Any, Optional
 
 from super_browser.browser.cdp import CDPBridge
@@ -169,6 +174,21 @@ class PageHandle:
         return self.backend_page
 
 
+def _unwrap_evaluate(raw: Any) -> Any:
+    """Normalize ``EnginePage.evaluate`` return shapes across backends.
+
+    Playwright-family pages and Selenium return the JS value directly; the
+    CDP backend returns a ``CDPResult`` envelope with the value nested under
+    ``data.result.value``.
+    """
+    if hasattr(raw, "ok"):
+        if not getattr(raw, "ok", False):
+            return None
+        data = getattr(raw, "data", None) or {}
+        return (data.get("result", {}) or {}).get("value")
+    return raw
+
+
 class NormalizedPage:
     """Backend-neutral façade page — the object stored in ``SuperBrowser._page``.
 
@@ -230,6 +250,161 @@ class NormalizedPage:
     @property
     def url(self) -> str:
         return self._engine_page.url
+
+    @property
+    def stealth_bridge(self) -> Any:
+        """Backend stealth bridge when the engine supplies one (optional)."""
+        return getattr(self._engine_page, "stealth_bridge", None)
+
+    # -- Native adaptation (P6) ------------------------------------------
+    #
+    # The wrapper MAY inspect backend_page in these methods; callers may
+    # not. They exist so agent/facade.py and mcp_server.py never need the
+    # native object — backend_page stays a documented escape hatch, not a
+    # composition dependency.
+
+    def attach_diagnostics(self, buffer: Any) -> None:
+        """Attach a diagnostics buffer to the native page's event stream.
+
+        Graceful no-op when the native object does not expose
+        Playwright/Patchright-style ``.on()`` (e.g. a Selenium WebDriver):
+        the buffer simply records nothing for such backends, instead of
+        crashing on a foreign event API.
+        """
+        native = self._backend_page
+        if native is not None and hasattr(native, "on"):
+            buffer.attach(native)
+
+    def _require_native(self, operation: str) -> Any:
+        if self._backend_page is None:
+            raise NotImplementedError(
+                f"{operation} requires a native page; "
+                "this backend does not supply one"
+            )
+        return self._backend_page
+
+    async def reload(self, wait_until: str = "load") -> Any:
+        return await self._require_native("reload").reload(wait_until=wait_until)
+
+    async def go_back(self, wait_until: str = "load") -> Any:
+        return await self._require_native("go_back").go_back(wait_until=wait_until)
+
+    async def go_forward(self, wait_until: str = "load") -> Any:
+        return await self._require_native("go_forward").go_forward(
+            wait_until=wait_until
+        )
+
+    async def selector_bounds(
+        self, selector: str
+    ) -> Optional[tuple[int, int, int, int]]:
+        """Resolve a CSS selector to ``(x, y, width, height)``.
+
+        Portable: uses ``EnginePage.evaluate`` with the selector JSON-encoded
+        (never interpolated). Returns ``None`` when the element is missing or
+        its box is empty.
+        """
+        expr = (
+            "(function() {"
+            "  var sel = JSON.parse(" + json.dumps(selector) + ");"
+            "  var el = document.querySelector(sel);"
+            "  if (!el) return null;"
+            "  var r = el.getBoundingClientRect();"
+            "  return JSON.stringify({x: r.x, y: r.y, w: r.width, h: r.height});"
+            "})()"
+        )
+        payload = _unwrap_evaluate(await self._engine_page.evaluate(expr))
+        if not payload:
+            return None
+        box = json.loads(payload)
+        if box["w"] <= 0 or box["h"] <= 0:
+            return None
+        return (int(box["x"]), int(box["y"]), int(box["w"]), int(box["h"]))
+
+    async def wait_for(
+        self,
+        *,
+        selector: Optional[str] = None,
+        text: Optional[str] = None,
+        url: Optional[str] = None,
+        load_state: Optional[str] = None,
+        timeout_ms: int = 10_000,
+    ) -> str:
+        """Wait for exactly one page condition (MCP ``wait_for`` semantics).
+
+        Native Patchright/Playwright semantics are preserved when the
+        backend page supplies the ``wait_for_*`` family. Backends without
+        them get a generic polling fallback for selector/text/url and basic
+        ready-state waits. ``networkidle`` is NEVER faked: on a native-less
+        backend it raises ``NotImplementedError`` instead.
+        """
+        given = [c for c in (selector, text, url, load_state) if c is not None]
+        if len(given) != 1:
+            raise ValueError("wait_for takes exactly one condition")
+
+        native = self._backend_page
+        native_complete = native is not None and all(
+            callable(getattr(native, name, None))
+            for name in (
+                "wait_for_selector",
+                "wait_for_function",
+                "wait_for_url",
+                "wait_for_load_state",
+            )
+        )
+        if native_complete:
+            if selector is not None:
+                await native.wait_for_selector(selector, timeout=timeout_ms)
+                return "selector"
+            if text is not None:
+                # arg= is supported by both Patchright and Playwright.
+                await native.wait_for_function(
+                    "(needle) => document.body && document.body.innerText.includes(needle)",
+                    arg=text,
+                    timeout=timeout_ms,
+                )
+                return "text"
+            if url is not None:
+                await native.wait_for_url(url, timeout=timeout_ms)
+                return "url"
+            await native.wait_for_load_state(load_state, timeout=timeout_ms)
+            return "load_state"
+
+        # Polling fallback for native-less backends.
+        if load_state == "networkidle":
+            raise NotImplementedError(
+                "networkidle cannot be faithfully polled on this backend"
+            )
+        deadline = time.monotonic() + timeout_ms / 1000
+        while time.monotonic() < deadline:
+            if selector is not None:
+                if await self.selector_bounds(selector) is not None:
+                    return "selector"
+            elif text is not None:
+                needle = json.dumps(text)  # exact-case match, like native
+                raw = _unwrap_evaluate(
+                    await self._engine_page.evaluate(
+                        "document.body && "
+                        "document.body.innerText.includes(JSON.parse(" + needle + "))"
+                    )
+                )
+                if raw:
+                    return "text"
+            elif url is not None:
+                if fnmatch.fnmatch(self.url, url):
+                    return "url"
+            else:
+                ready = _unwrap_evaluate(
+                    await self._engine_page.evaluate("document.readyState")
+                )
+                if load_state in ("domcontentloaded", "load") and ready in (
+                    "interactive",
+                    "complete",
+                ):
+                    return "load_state"
+                if load_state == "commit" and ready:
+                    return "load_state"
+            await asyncio.sleep(0.1)
+        raise TimeoutError(f"wait_for: condition not met within {timeout_ms}ms")
 
     async def goto(self, url: str, *args: Any, **kwargs: Any) -> Any:
         return await self._engine_page.goto(url, *args, **kwargs)

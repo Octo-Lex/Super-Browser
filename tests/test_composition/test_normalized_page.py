@@ -15,6 +15,9 @@ test_vision_capture_regression.py.
 from __future__ import annotations
 
 from typing import Any
+from unittest.mock import MagicMock
+
+import pytest
 
 from super_browser.browser.page import NormalizedPage, _maybe_reencode_jpeg
 
@@ -221,3 +224,257 @@ async def test_is_alive_assumes_alive_without_probe() -> None:
 async def test_is_alive_false_when_no_native_object() -> None:
     page = NormalizedPage(engine_page=None, backend_page=None, cdp=None)
     assert page.is_alive is False
+
+
+# ============================================================================
+# P6 adapter surfaces
+# ============================================================================
+
+
+class _RecordingBuffer:
+    def __init__(self) -> None:
+        self.attached: list[Any] = []
+
+    def attach(self, native: Any) -> None:
+        self.attached.append(native)
+
+
+class _WithOn:
+    def on(self, event: str, handler: Any) -> None:  # Playwright-style
+        pass
+
+
+class _BareNativePage:
+    """No .on() — e.g. a Selenium WebDriver object."""
+
+
+def test_attach_diagnostics_attaches_when_native_has_on() -> None:
+    engine = _FakeEnginePage()
+    engine.backend_page = _WithOn()
+    page = NormalizedPage(engine_page=engine)
+    buffer = _RecordingBuffer()
+
+    page.attach_diagnostics(buffer)
+
+    assert buffer.attached == [engine.backend_page]
+
+
+def test_attach_diagnostics_noop_without_on() -> None:
+    engine = _FakeEnginePage()
+    engine.backend_page = _BareNativePage()
+    page = NormalizedPage(engine_page=engine)
+    buffer = _RecordingBuffer()
+
+    page.attach_diagnostics(buffer)  # must not raise
+
+    assert buffer.attached == []
+
+
+def test_attach_diagnostics_noop_without_native_page() -> None:
+    engine = _FakeEnginePage()
+    engine.backend_page = None
+    page = NormalizedPage(engine_page=engine)
+    buffer = _RecordingBuffer()
+
+    page.attach_diagnostics(buffer)
+
+    assert buffer.attached == []
+
+
+def test_stealth_bridge_derives_from_engine_page() -> None:
+    engine = _FakeEnginePage()
+    engine.stealth_bridge = object()
+    assert NormalizedPage(engine_page=engine).stealth_bridge is engine.stealth_bridge
+    assert NormalizedPage(engine_page=_FakeEnginePage()).stealth_bridge is None
+
+
+class _HistoryNative:
+    def __init__(self) -> None:
+        self.calls: list[str] = []
+
+    async def reload(self, wait_until: str = "load") -> None:
+        self.calls.append(f"reload:{wait_until}")
+
+    async def go_back(self, wait_until: str = "load") -> None:
+        self.calls.append(f"go_back:{wait_until}")
+
+    async def go_forward(self, wait_until: str = "load") -> None:
+        self.calls.append(f"go_forward:{wait_until}")
+
+
+async def test_history_navigation_delegates_to_native() -> None:
+    engine = _FakeEnginePage()
+    engine.backend_page = _HistoryNative()
+    page = NormalizedPage(engine_page=engine)
+
+    await page.reload(wait_until="domcontentloaded")
+    await page.go_back(wait_until="load")
+    await page.go_forward()
+
+    assert engine.backend_page.calls == [
+        "reload:domcontentloaded",
+        "go_back:load",
+        "go_forward:load",
+    ]
+
+
+async def test_history_navigation_raises_structured_without_native() -> None:
+    page = NormalizedPage(engine_page=_FakeEnginePage())  # backend_page=None
+    for call in (page.reload, page.go_back, page.go_forward):
+        with pytest.raises(NotImplementedError):
+            await call()
+
+
+class _EvaluateEnginePage(_FakeEnginePage):
+    """Returns a canned evaluate result (direct value or CDP envelope)."""
+
+    def __init__(self, result: Any) -> None:
+        super().__init__()
+        self._result = result
+        self.last_expr = ""
+
+    async def evaluate(self, expression: str, *args: Any, **kwargs: Any) -> Any:
+        self.last_expr = expression
+        return self._result
+
+
+async def test_selector_bounds_parses_box_from_direct_value() -> None:
+    import json as _json
+
+    box = {"x": 10.0, "y": 20.0, "w": 300.5, "h": 40.0}
+    engine = _EvaluateEnginePage(_json.dumps(box))
+    page = NormalizedPage(engine_page=engine)
+
+    assert await page.selector_bounds("#btn") == (10, 20, 300, 40)
+    # Selector must be JSON-encoded inside the expression, not interpolated.
+    assert _json.dumps("#btn") in engine.last_expr
+    assert "#btn" not in engine.last_expr.replace(_json.dumps("#btn"), "")
+
+
+async def test_selector_bounds_handles_cdp_envelope() -> None:
+    import json as _json
+
+    box = _json.dumps({"x": 1, "y": 2, "w": 3, "h": 4})
+    envelope = MagicMock()
+    envelope.ok = True
+    envelope.data = {"result": {"value": box}}
+    engine = _EvaluateEnginePage(envelope)
+    page = NormalizedPage(engine_page=engine)
+
+    assert await page.selector_bounds("#x") == (1, 2, 3, 4)
+
+
+async def test_selector_bounds_returns_none_for_missing_or_empty() -> None:
+    assert await NormalizedPage(
+        engine_page=_EvaluateEnginePage(None)
+    ).selector_bounds("#gone") is None
+    import json as _json
+
+    assert await NormalizedPage(
+        engine_page=_EvaluateEnginePage(
+            _json.dumps({"x": 0, "y": 0, "w": 0, "h": 0})
+        )
+    ).selector_bounds("#hidden") is None
+
+
+class _PollingNative:
+    """Backend with NO wait_for_* family — exercises the polling fallback."""
+
+    def __init__(self, ready_after: int) -> None:
+        self.backend_page = self
+        self.ready_after = ready_after
+        self.reads = 0
+
+    async def evaluate(self, expression: str, *args: Any, **kwargs: Any) -> Any:
+        self.reads += 1
+        if expression.strip() == "document.readyState":
+            return "complete" if self.reads >= self.ready_after else "loading"
+        if "innerText.includes" in expression:
+            return self.reads >= self.ready_after
+        return None
+
+    @property
+    def url(self) -> str:
+        return "https://example.com/page"
+
+
+async def test_wait_for_polling_fallback_ready_state() -> None:
+    engine = _PollingNative(ready_after=2)
+    page = NormalizedPage(engine_page=engine)
+
+    matched = await page.wait_for(load_state="load", timeout_ms=2000)
+
+    assert matched == "load_state"
+
+
+async def test_wait_for_selector_polling_times_out_without_match() -> None:
+    """A native-less backend whose evaluate cannot satisfy the selector must
+    degrade to a structured TimeoutError — never an AttributeError."""
+    engine = _PollingNative(ready_after=1)
+    page = NormalizedPage(engine_page=engine)
+
+    with pytest.raises(TimeoutError):
+        await page.wait_for(selector="#never-matches", timeout_ms=400)
+
+
+async def test_wait_for_text_polling_matches() -> None:
+    engine = _PollingNative(ready_after=1)
+    page = NormalizedPage(engine_page=engine)
+
+    assert await page.wait_for(text="needle", timeout_ms=2000) == "text"
+
+
+async def test_wait_for_networkidle_never_faked_without_native() -> None:
+    page = NormalizedPage(engine_page=_PollingNative(1))
+
+    with pytest.raises(NotImplementedError):
+        await page.wait_for(load_state="networkidle", timeout_ms=500)
+
+
+async def test_wait_for_timeout_raises_on_polling_backend() -> None:
+    engine = _PollingNative(ready_after=10_000)
+    page = NormalizedPage(engine_page=engine)
+
+    with pytest.raises(TimeoutError):
+        await page.wait_for(load_state="load", timeout_ms=300)
+
+
+class _NativeWaitFor:
+    """Backend WITH the full wait_for_* family — native path preserved."""
+
+    def __init__(self) -> None:
+        self.backend_page = self
+        self.calls: list[str] = []
+
+    async def wait_for_selector(self, selector: str, timeout: int = 10_000) -> None:
+        self.calls.append(f"selector:{selector}")
+
+    async def wait_for_function(self, expr: str, **kwargs: Any) -> None:
+        self.calls.append("function")
+
+    async def wait_for_url(self, url: str, timeout: int = 10_000) -> None:
+        self.calls.append(f"url:{url}")
+
+    async def wait_for_load_state(self, state: str, timeout: int = 10_000) -> None:
+        self.calls.append(f"load_state:{state}")
+
+    async def evaluate(self, expression: str, *args: Any, **kwargs: Any) -> Any:
+        return None
+
+
+async def test_wait_for_preserves_native_semantics_when_available() -> None:
+    engine = _NativeWaitFor()
+    engine.backend_page = engine
+    page = NormalizedPage(engine_page=engine)
+
+    await page.wait_for(selector="#x", timeout_ms=1234)
+    await page.wait_for(text="needle", timeout_ms=1234)
+    await page.wait_for(url="**/page", timeout_ms=1234)
+    await page.wait_for(load_state="networkidle", timeout_ms=1234)
+
+    assert engine.calls == [
+        "selector:#x",
+        "function",
+        "url:**/page",
+        "load_state:networkidle",
+    ]

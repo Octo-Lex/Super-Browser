@@ -39,7 +39,7 @@ def _make_browser_with_mocks(*, security_manager=None, stealth_bridge=None) -> S
             return_value=[{"name": "session", "value": "abc123"}]
         )
         stealth_bridge.set_cookies = AsyncMock()
-    browser._page.engine_page.stealth_bridge = stealth_bridge
+    browser._page.stealth_bridge = stealth_bridge
     browser._running = True
     browser._security_manager = security_manager
     return browser

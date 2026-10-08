@@ -12,6 +12,9 @@ Encodes the defect reproduced by execution on 2026-10-07 (working tree at
       -> _page is replaced by a PageHandle (accepts format=)
       -> the identical capture succeeds
 
+  (Historical: P5 later removed the PageHandle path entirely — today _page
+  is always a NormalizedPage, on start() and after every tab operation.)
+
 Test split (per the frozen plan, PLAN-COMPOSITION-HARDENING.md step 2):
 
 - ``test_fresh_start_capture_succeeds_without_tab_operation`` — the gate.
@@ -21,9 +24,11 @@ Test split (per the frozen plan, PLAN-COMPOSITION-HARDENING.md step 2):
 - ``test_capture_after_open_tab_succeeds`` — characterizes the accidental
   recovery path; passes today and must keep passing.
 - ``test_page_abstraction_is_normalized_after_start_and_tab`` — the PR 1
-  invariant ("_page is never an arbitrary raw backend Page"), marked
-  ``xfail(strict=False)`` because 2.13.0 violates it. PR 1 removes the
-  marker in its own diff so the invariant becomes a hard gate.
+  invariant ("_page is never an arbitrary raw backend Page"), hard since
+  P3: it asserts ``NormalizedPage`` after start(), open_tab(), and
+  switch_tab() (the original xfail asserted PageHandle and was rewritten
+  per the approved P3 amendment rather than canonizing the legacy
+  wrapper).
 - ``test_extract_image_text_vertical_on_local_fixture`` — the full OCR
   vertical. Skips where no ``tesseract`` binary exists (e.g. dev Windows
   boxes); runs on CI runners that install Tesseract.

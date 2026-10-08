@@ -15,11 +15,11 @@ step 4):
 
 - **Browser-backed verticals** run one real lifecycle per backend. The
   Playwright ENGINE smoke (factory → start → new_page → goto → screenshot
-  → stop) is a hard gate as of P2. The full Playwright FAÇADE vertical
-  stays ``xfail(strict=False)`` until P3–P5 close the controller, page,
-  and tab seams — factory routing alone cannot make that path valid.
-  Selenium/CDP have factory-level tests in ``test_engine_factory.py``;
-  their backend unit tests live under ``tests/test_browser/``.
+  → stop) is a hard gate as of P2. The full Playwright FAÇADE vertical —
+  start → navigate → observe → screenshot → tabs → base page → stop — is
+  a hard gate since P5 made tab ownership engine-owned. Selenium/CDP have
+  factory-level tests in ``test_engine_factory.py``; their backend unit
+  tests live under ``tests/test_browser/``.
 """
 
 from __future__ import annotations

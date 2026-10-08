@@ -383,8 +383,7 @@ class TestFacadeOCRNormalization:
         sb._page = MagicMock()
         sb._page.screenshot = AsyncMock(return_value=b"\x89PNG\r\n\x1a\n" + b"\x00" * 100)
         sb._page.is_alive = True
-        sb._page.backend_page = MagicMock()
-        sb._page.backend_page.query_selector = AsyncMock(return_value=None)
+        sb._page.selector_bounds = AsyncMock(return_value=None)
 
         mock_data = {
             "text": ["Milk", "2L", "", "SAR"],
@@ -442,8 +441,7 @@ class TestFacadeOCRNormalization:
         sb._page = MagicMock()
         sb._page.screenshot = AsyncMock(return_value=b"\x89PNG\r\n\x1a\n" + b"\x00" * 100)
         sb._page.is_alive = True
-        sb._page.backend_page = MagicMock()
-        sb._page.backend_page.query_selector = AsyncMock(return_value=None)
+        sb._page.selector_bounds = AsyncMock(return_value=None)
 
         mock_data = {
             "text": ["Hello", "", "World"],
@@ -506,13 +504,8 @@ class TestFacadeSelectorResolution:
         sb._page.screenshot = AsyncMock(return_value=b"\x89PNG\r\n\x1a\n" + b"\x00" * 100)
         sb._page.is_alive = True
 
-        # Mock element with bounding box.
-        mock_el = MagicMock()
-        mock_el.bounding_box = AsyncMock(return_value={
-            "x": 100, "y": 200, "width": 300, "height": 150,
-        })
-        sb._page.backend_page = MagicMock()
-        sb._page.backend_page.query_selector = AsyncMock(return_value=mock_el)
+        # P6: the crop region resolves through NormalizedPage.selector_bounds.
+        sb._page.selector_bounds = AsyncMock(return_value=(100, 200, 300, 150))
 
         mock_data = {
             "text": ["Product"],
@@ -547,10 +540,8 @@ class TestFacadeSelectorResolution:
             sys.modules.update(orig_modules)
 
         assert result.ok is True
-        # Selector was resolved (query_selector called with the selector).
-        sb._page.backend_page.query_selector.assert_awaited_once_with("#product-img")
-        # Bounding box was queried.
-        mock_el.bounding_box.assert_awaited_once()
+        # Selector was resolved through the adapter.
+        sb._page.selector_bounds.assert_awaited_once_with("#product-img")
         # Source echoes the selector.
         assert result.data["source"]["selector"] == "#product-img"
 
@@ -566,8 +557,7 @@ class TestFacadeSelectorResolution:
         sb._page = MagicMock()
         sb._page.screenshot = AsyncMock(return_value=b"\x89PNG\r\n\x1a\n" + b"\x00" * 100)
         sb._page.is_alive = True
-        sb._page.backend_page = MagicMock()
-        sb._page.backend_page.query_selector = AsyncMock(return_value=None)  # not found
+        sb._page.selector_bounds = AsyncMock(return_value=None)  # not found
 
         mock_data = {
             "text": ["Fallback"],
@@ -607,14 +597,15 @@ class TestFacadeSelectorResolution:
         assert result.data["source"]["selector"] == "#nonexistent"
 
     @pytest.mark.asyncio
-    async def test_selector_uses_backend_page_not_engine_page(self):
-        """Verify the facade resolves selector via backend_page (raw page
-        that exposes query_selector), NOT engine_page (the PatchrightPage
-        wrapper which lacks query_selector).
+    async def test_selector_resolves_through_normalized_page(self):
+        """P6: the facade resolves the crop region via
+        NormalizedPage.selector_bounds; backend_page and engine_page must
+        NOT be touched (the old query_selector path is gone).
 
-        This test fails on the original code that used engine_page."""
+        This test fails on any code that reaches raw pages directly."""
         import sys
         import types
+        from unittest.mock import PropertyMock
 
         from super_browser import SuperBrowser
 
@@ -623,17 +614,12 @@ class TestFacadeSelectorResolution:
         sb._page.screenshot = AsyncMock(return_value=b"\x89PNG\r\n\x1a\n" + b"\x00" * 100)
         sb._page.is_alive = True
 
-        # backend_page is the raw page — should be used for query_selector.
-        mock_el = MagicMock()
-        mock_el.bounding_box = AsyncMock(return_value={
-            "x": 10, "y": 10, "width": 200, "height": 100,
-        })
-        sb._page.backend_page = MagicMock()
-        sb._page.backend_page.query_selector = AsyncMock(return_value=mock_el)
+        # Any raw-page reach fails loudly.
+        type(sb._page).backend_page = PropertyMock(
+            side_effect=AssertionError("facade must not use backend_page"),
+        )
 
-        # engine_page is the wrapper — should NOT be called.
-        # We give it NO query_selector to prove it's not the code path.
-        sb._page.engine_page = MagicMock(spec=["screenshot", "evaluate"])
+        sb._page.selector_bounds = AsyncMock(return_value=(10, 10, 200, 100))
 
         mock_data = {
             "text": ["Text"],
@@ -665,7 +651,5 @@ class TestFacadeSelectorResolution:
             sys.modules.update(orig_modules)
 
         assert result.ok is True
-        # backend_page.query_selector was called with the selector.
-        sb._page.backend_page.query_selector.assert_awaited_once_with("#img")
-        # Element bounding box was resolved.
-        mock_el.bounding_box.assert_awaited_once()
+        # selector_bounds was called with the selector through the adapter.
+        sb._page.selector_bounds.assert_awaited_once_with("#img")
