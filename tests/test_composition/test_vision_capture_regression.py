@@ -12,6 +12,9 @@ Encodes the defect reproduced by execution on 2026-10-07 (working tree at
       -> _page is replaced by a PageHandle (accepts format=)
       -> the identical capture succeeds
 
+  (Historical: P5 later removed the PageHandle path entirely — today _page
+  is always a NormalizedPage, on start() and after every tab operation.)
+
 Test split (per the frozen plan, PLAN-COMPOSITION-HARDENING.md step 2):
 
 - ``test_fresh_start_capture_succeeds_without_tab_operation`` — the gate.
@@ -21,9 +24,11 @@ Test split (per the frozen plan, PLAN-COMPOSITION-HARDENING.md step 2):
 - ``test_capture_after_open_tab_succeeds`` — characterizes the accidental
   recovery path; passes today and must keep passing.
 - ``test_page_abstraction_is_normalized_after_start_and_tab`` — the PR 1
-  invariant ("_page is never an arbitrary raw backend Page"), marked
-  ``xfail(strict=False)`` because 2.13.0 violates it. PR 1 removes the
-  marker in its own diff so the invariant becomes a hard gate.
+  invariant ("_page is never an arbitrary raw backend Page"), hard since
+  P3: it asserts ``NormalizedPage`` after start(), open_tab(), and
+  switch_tab() (the original xfail asserted PageHandle and was rewritten
+  per the approved P3 amendment rather than canonizing the legacy
+  wrapper).
 - ``test_extract_image_text_vertical_on_local_fixture`` — the full OCR
   vertical. Skips where no ``tesseract`` binary exists (e.g. dev Windows
   boxes); runs on CI runners that install Tesseract.
@@ -95,35 +100,37 @@ async def test_capture_after_open_tab_succeeds() -> None:
 
 
 # ============================================================================
-# PR 1 invariant — xfail until the normalized page abstraction lands
+# PR 1 invariant — hard gate since P3
 # ============================================================================
 
 
 @pytest.mark.integration
-@pytest.mark.xfail(
-    strict=False,
-    reason="PR 1 invariant (PLAN-COMPOSITION-HARDENING.md step 4): start() "
-    "still leaves a raw PatchrightPage; remove this marker in the PR 1 diff.",
-)
 async def test_page_abstraction_is_normalized_after_start_and_tab() -> None:
-    """After composition hardening, _page is PageHandle-shaped everywhere.
-
-    Today: start() -> PatchrightPage, open_tab() -> PageHandle (mixed
-    abstractions — the root cause of the format=/type= split). PR 1 must
-    make both sites yield the same normalized abstraction, then delete the
-    xfail marker so this becomes a permanent guard.
+    """The invariant, hard since P3: ``_page`` is a ``NormalizedPage`` after
+    every transition — ``start()``, ``open_tab()``, and ``switch_tab()`` —
+    while ``PageHandle`` remains the internal legacy tab adapter (P5 retires
+    that path). The xfail this test carried before P3 was rewritten to the
+    backend-neutral contract rather than canonizing ``PageHandle``.
     """
-    from super_browser.browser.page import PageHandle
+    from super_browser.browser.page import NormalizedPage
 
     sb = SuperBrowser(config=_headless_config())
     await sb.start()
     try:
-        assert isinstance(sb._page, PageHandle), (
-            f"after start(), _page is {type(sb._page).__name__}, not PageHandle"
+        assert isinstance(sb._page, NormalizedPage), (
+            f"after start(), _page is {type(sb._page).__name__}, not NormalizedPage"
         )
-        await sb.open_tab("about:blank")
-        assert isinstance(sb._page, PageHandle), (
-            f"after open_tab(), _page is {type(sb._page).__name__}, not PageHandle"
+        tab_a = await sb.open_tab("about:blank")
+        assert tab_a.ok, f"open_tab failed: {tab_a.error}"
+        assert isinstance(sb._page, NormalizedPage), (
+            f"after open_tab(), _page is {type(sb._page).__name__}, not NormalizedPage"
+        )
+        tab_b = await sb.open_tab("about:blank")
+        assert tab_b.ok, f"second open_tab failed: {tab_b.error}"
+        switched = await sb.switch_tab(tab_a.data.tab_id)
+        assert switched.ok, f"switch_tab failed: {switched.error}"
+        assert isinstance(sb._page, NormalizedPage), (
+            f"after switch_tab(), _page is {type(sb._page).__name__}, not NormalizedPage"
         )
     finally:
         await sb.stop()

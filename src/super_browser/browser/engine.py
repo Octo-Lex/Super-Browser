@@ -111,6 +111,10 @@ class EnginePage(Protocol):
         """Close this page."""
         ...
 
+    async def activate(self) -> None:
+        """Bring this page to the foreground (tab activation; PR 1 P5)."""
+        ...
+
     async def content(self) -> str:
         """Get page HTML content."""
         ...
@@ -287,12 +291,14 @@ def _detect_backend(config: Any = None) -> str:
         if backend and backend != "auto":
             return backend
 
-        # 2-3. Mode-based detection
+        # 2-3. Mode-based detection. SessionMode values are lowercase
+        # ("patchright_launch", "cloak_launch"); normalize before matching so
+        # the check fires for enum members and plain strings alike.
         if mode is not None:
-            mode_str = str(mode)
-            if "PATCHRIGHT" in mode_str:
+            mode_str = str(getattr(mode, "value", mode)).lower()
+            if "patchright" in mode_str:
                 return "patchright"
-            if "CLOAK" in mode_str:
+            if "cloak" in mode_str:
                 return "cloak"
 
     # 4. Auto-detect via import probing

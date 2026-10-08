@@ -65,6 +65,11 @@ jobs:
           sudo apt-get install -y tesseract-ocr
           tesseract --version
 
+      # [all] installs the Playwright python package but not its browser;
+      # the Playwright engine smoke and verticals need the Chromium binary.
+      - name: Install Playwright browser
+        run: python -m playwright install chromium
+
       - name: Run tests
         run: >
           python -m pytest tests/

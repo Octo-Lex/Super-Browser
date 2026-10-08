@@ -454,7 +454,7 @@ class TestDispatchRouting:
 
 
 def _make_wait_dispatcher() -> tuple[Any, Any, Any]:
-    """Build a dispatcher whose fake_sb has a page with a mock backend_page."""
+    """Build a dispatcher whose fake_sb has a NormalizedPage-shaped page."""
     from super_browser.mcp_server import (
         MCPAuthorizer,
         MCPBrowserRuntime,
@@ -462,15 +462,10 @@ def _make_wait_dispatcher() -> tuple[Any, Any, Any]:
         ToolDispatcher,
     )
 
-    fake_backend_page = MagicMock()
-    fake_backend_page.wait_for_selector = AsyncMock()
-    fake_backend_page.wait_for_function = AsyncMock()
-    fake_backend_page.wait_for_url = AsyncMock()
-    fake_backend_page.wait_for_load_state = AsyncMock()
-
     fake_page = MagicMock()
-    # The handler reaches the raw page via .backend_page (one hop).
-    fake_page.backend_page = fake_backend_page
+    # P6: the handler waits through the NormalizedPage adapter, so the
+    # normalized page itself carries the wait_for seam.
+    fake_page.wait_for = AsyncMock(return_value="selector")
 
     fake_sb = MagicMock()
     fake_sb._page = fake_page
@@ -479,7 +474,7 @@ def _make_wait_dispatcher() -> tuple[Any, Any, Any]:
     runtime._sb = fake_sb  # type: ignore[assignment]
     authorizer = MCPAuthorizer(MCPSessionPolicy(allow_actions=False))
     dispatcher = ToolDispatcher(runtime, authorizer=authorizer)
-    return dispatcher, fake_sb, fake_backend_page
+    return dispatcher, fake_sb, fake_page
 
 
 class TestWaitForValidation:
@@ -539,23 +534,27 @@ class TestWaitForValidation:
 class TestWaitForHandler:
     @pytest.mark.asyncio
     async def test_wait_for_selector_success(self):
-        dispatcher, _, backend = _make_wait_dispatcher()
+        dispatcher, _, page = _make_wait_dispatcher()
         result = await dispatcher.dispatch("wait_for", {"selector": "#btn"})
-        backend.wait_for_selector.assert_awaited_once_with("#btn", timeout=10000)
+        page.wait_for.assert_awaited_once_with(
+            selector="#btn", text=None, url=None, load_state=None, timeout_ms=10000,
+        )
         payload = json.loads(result[0].text)
         assert payload["ok"] is True
         assert payload["matched"] == "selector"
 
     @pytest.mark.asyncio
     async def test_wait_for_selector_passes_timeout_ms(self):
-        dispatcher, _, backend = _make_wait_dispatcher()
+        dispatcher, _, page = _make_wait_dispatcher()
         await dispatcher.dispatch("wait_for", {"selector": "#btn", "timeout_ms": 5000})
-        backend.wait_for_selector.assert_awaited_once_with("#btn", timeout=5000)
+        page.wait_for.assert_awaited_once_with(
+            selector="#btn", text=None, url=None, load_state=None, timeout_ms=5000,
+        )
 
     @pytest.mark.asyncio
     async def test_wait_for_selector_timeout_surfaces_structured(self):
-        dispatcher, _, backend = _make_wait_dispatcher()
-        backend.wait_for_selector = AsyncMock(side_effect=TimeoutError("timeout 10000ms exceeded"))
+        dispatcher, _, page = _make_wait_dispatcher()
+        page.wait_for = AsyncMock(side_effect=TimeoutError("timeout 10000ms exceeded"))
         result = await dispatcher.dispatch("wait_for", {"selector": "#missing"})
         payload = json.loads(result[0].text)
         assert payload["ok"] is False
@@ -564,39 +563,46 @@ class TestWaitForHandler:
 
     @pytest.mark.asyncio
     async def test_wait_for_text_success(self):
-        dispatcher, _, backend = _make_wait_dispatcher()
+        dispatcher, _, page = _make_wait_dispatcher()
+        page.wait_for = AsyncMock(return_value="text")
         result = await dispatcher.dispatch("wait_for", {"text": "Welcome"})
-        # arg= must be used (verified supported on both engines).
-        backend.wait_for_function.assert_awaited_once()
-        call = backend.wait_for_function.await_args
-        assert call.args[0].startswith("(needle)")
-        assert call.kwargs.get("arg") == "Welcome"
+        # arg= forwarding is asserted at the adapter level
+        # (test_normalized_page.py, native-semantics test).
+        page.wait_for.assert_awaited_once_with(
+            selector=None, text="Welcome", url=None, load_state=None, timeout_ms=10000,
+        )
         payload = json.loads(result[0].text)
         assert payload["ok"] is True
         assert payload["matched"] == "text"
 
     @pytest.mark.asyncio
     async def test_wait_for_url_success(self):
-        dispatcher, _, backend = _make_wait_dispatcher()
+        dispatcher, _, page = _make_wait_dispatcher()
+        page.wait_for = AsyncMock(return_value="url")
         result = await dispatcher.dispatch("wait_for", {"url": "**/login"})
-        backend.wait_for_url.assert_awaited_once_with("**/login", timeout=10000)
+        page.wait_for.assert_awaited_once_with(
+            selector=None, text=None, url="**/login", load_state=None, timeout_ms=10000,
+        )
         payload = json.loads(result[0].text)
         assert payload["ok"] is True
         assert payload["matched"] == "url"
 
     @pytest.mark.asyncio
     async def test_wait_for_load_state_success(self):
-        dispatcher, _, backend = _make_wait_dispatcher()
+        dispatcher, _, page = _make_wait_dispatcher()
+        page.wait_for = AsyncMock(return_value="load_state")
         result = await dispatcher.dispatch("wait_for", {"load_state": "networkidle"})
-        backend.wait_for_load_state.assert_awaited_once_with("networkidle", timeout=10000)
+        page.wait_for.assert_awaited_once_with(
+            selector=None, text=None, url=None, load_state="networkidle", timeout_ms=10000,
+        )
         payload = json.loads(result[0].text)
         assert payload["ok"] is True
         assert payload["matched"] == "load_state"
 
     @pytest.mark.asyncio
-    async def test_wait_for_uses_backend_page_not_raw_page(self):
-        """The handler must reach the raw page via .backend_page (one hop),
-        not via the deprecated .raw_page accessor."""
+    async def test_wait_for_goes_through_normalized_adapter(self):
+        """P6: the handler must reach the page through NormalizedPage.wait_for.
+        Touching backend_page or raw_page is a composition violation."""
         from unittest.mock import PropertyMock
 
         from super_browser.mcp_server import (
@@ -606,16 +612,14 @@ class TestWaitForHandler:
             ToolDispatcher,
         )
 
-        fake_backend = MagicMock()
-        fake_backend.wait_for_selector = AsyncMock()
-
         fake_page = MagicMock()
-        # Wire backend_page to return the raw page; raw_page is deprecated.
-        type(fake_page).backend_page = PropertyMock(return_value=fake_backend)
-        # If the handler touches raw_page it would emit a DeprecationWarning;
-        # we assert via spy that raw_page is never accessed.
+        fake_page.wait_for = AsyncMock(return_value="selector")
+        # Any raw-page reach fails the test loudly.
+        type(fake_page).backend_page = PropertyMock(
+            side_effect=AssertionError("handler must not use backend_page"),
+        )
         type(fake_page).raw_page = PropertyMock(
-            side_effect=AssertionError("handler must use backend_page, not raw_page"),
+            side_effect=AssertionError("handler must not use raw_page"),
         )
 
         fake_sb = MagicMock()
@@ -627,7 +631,7 @@ class TestWaitForHandler:
         result = await dispatcher.dispatch("wait_for", {"selector": "#x"})
         payload = json.loads(result[0].text)
         assert payload["ok"] is True
-        fake_backend.wait_for_selector.assert_awaited_once()
+        fake_page.wait_for.assert_awaited_once()
 
     @pytest.mark.asyncio
     async def test_wait_for_no_active_page_returns_error(self):
@@ -1004,12 +1008,9 @@ class TestReadWorkflowSmoke:
             ToolDispatcher,
         )
 
-        # --- Mock the raw page (wait_for target) ---
-        fake_backend_page = MagicMock()
-        fake_backend_page.wait_for_function = AsyncMock()  # wait_for text
-
+        # --- Mock the normalized page (wait_for target, P6) ---
         fake_page = MagicMock()
-        fake_page.backend_page = fake_backend_page
+        fake_page.wait_for = AsyncMock(return_value="text")
 
         # --- Mock the facade (navigate + extract targets) ---
         fake_sb = MagicMock()
@@ -1034,7 +1035,7 @@ class TestReadWorkflowSmoke:
         wait_payload = json.loads(wait_result[0].text)
         assert wait_payload["ok"] is True, "wait_for must succeed"
         assert wait_payload["matched"] == "text"
-        fake_backend_page.wait_for_function.assert_awaited_once()
+        fake_page.wait_for.assert_awaited_once()
 
         # 3. extract_text (inspect tier)
         extract_result = await dispatcher.dispatch("extract_text", {"query": "Example"})
@@ -1051,10 +1052,9 @@ class TestReadWorkflowSmoke:
         dispatcher that build_server() constructs (not a fresh ToolDispatcher)."""
         from super_browser.mcp_server import MCPBrowserRuntime, build_server
 
-        fake_backend_page = MagicMock()
-        fake_backend_page.wait_for_load_state = AsyncMock()
+        # --- Mock the normalized page (wait_for target, P6) ---
         fake_page = MagicMock()
-        fake_page.backend_page = fake_backend_page
+        fake_page.wait_for = AsyncMock(return_value="load_state")
 
         fake_sb = MagicMock()
         fake_sb._page = fake_page

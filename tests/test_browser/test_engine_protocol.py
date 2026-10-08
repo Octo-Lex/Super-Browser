@@ -56,9 +56,9 @@ class TestBrowserEngineProtocol:
 class TestEnginePageProtocol:
     """TEST-46-01-03"""
 
-    def test_protocol_has_21_members(self) -> None:
+    def test_protocol_has_22_members(self) -> None:
         expected_methods = {
-            "goto", "title", "close", "content", "click", "fill",
+            "goto", "title", "close", "activate", "content", "click", "fill",
             "select_option", "hover", "drag_and_drop", "scroll",
             "type_text", "press_key", "set_input_files", "evaluate",
             "screenshot", "route", "unroute_all", "frame_locator",

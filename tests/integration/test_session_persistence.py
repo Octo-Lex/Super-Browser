@@ -30,11 +30,10 @@ def _make_facade_with_bridge(tmp_path: Path) -> tuple[SuperBrowser, MagicMock]:
     bridge.set_cookies = AsyncMock()
 
     engine_page = MagicMock()
-    engine_page.stealth_bridge = bridge
     engine_page.url = "https://example.com/dashboard"
 
     page = MagicMock()
-    page.engine_page = engine_page
+    page.stealth_bridge = bridge
 
     facade = SuperBrowser.__new__(SuperBrowser)
     facade._page = page
@@ -100,8 +99,7 @@ class TestSaveSession:
     @pytest.mark.asyncio
     async def test_save_session_no_stealth_bridge(self) -> None:
         page = MagicMock()
-        page.engine_page = MagicMock()
-        page.engine_page.stealth_bridge = None
+        page.stealth_bridge = None
 
         facade = SuperBrowser.__new__(SuperBrowser)
         facade._page = page
@@ -213,8 +211,7 @@ class TestLoadSession:
     @pytest.mark.asyncio
     async def test_load_session_no_stealth_bridge(self) -> None:
         page = MagicMock()
-        page.engine_page = MagicMock()
-        page.engine_page.stealth_bridge = None
+        page.stealth_bridge = None
 
         facade = SuperBrowser.__new__(SuperBrowser)
         facade._page = page

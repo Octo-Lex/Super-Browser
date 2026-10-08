@@ -13,7 +13,8 @@ from __future__ import annotations
 import logging
 from typing import Any, Callable, Optional
 
-from super_browser.browser.cdp import CDPResult
+from super_browser.browser.cdp import CDPBridge, CDPResult
+from super_browser.browser.config import SessionConfig
 from super_browser.browser.engine import EngineCapabilities
 
 logger = logging.getLogger(__name__)
@@ -97,6 +98,7 @@ class PlaywrightPage:
         self._context = context
         self._stealth_bridge: Optional[PlaywrightStealthBridge] = None
         self._cdp_session: Any = None
+        self._cdp_bridge: Optional[CDPBridge] = None
 
     async def _ensure_cdp(self) -> None:
         """Lazily create CDP session for Chromium pages."""
@@ -108,6 +110,10 @@ class PlaywrightPage:
             try:
                 self._cdp_session = await self._context.new_cdp_session(self._page)
                 self._stealth_bridge = PlaywrightStealthBridge(self._cdp_session)
+                # P4: the controller-facing .cdp is a real CDPBridge. The raw
+                # Playwright CDP session stays with the stealth bridge, whose
+                # cdp_send path consumes it directly.
+                self._cdp_bridge = CDPBridge(self._cdp_session, SessionConfig())
             except Exception as exc:
                 logger.warning("Failed to create CDP session: %s", exc)
 
@@ -133,6 +139,10 @@ class PlaywrightPage:
     async def content(self) -> str:
         """Get page HTML content."""
         return await self._page.content()
+
+    async def activate(self) -> None:
+        """Bring this page to the foreground (EnginePage P5)."""
+        await self._page.bring_to_front()
 
     # -- Interaction -----------------------------------------------
 
@@ -200,7 +210,14 @@ class PlaywrightPage:
         return await self._page.evaluate(expression, *args, **kwargs)
 
     async def screenshot(self, **kwargs: Any) -> bytes:
-        """Capture screenshot as PNG bytes."""
+        """Capture a screenshot.
+
+        ``format="png" | "jpeg"`` is the canonical vocabulary (PR 1 P3);
+        translated to the Playwright ``type=`` spelling here so callers never
+        need to know the backend. A raw ``type=`` passes through untouched.
+        """
+        if "format" in kwargs:
+            kwargs["type"] = kwargs.pop("format")
         return await self._page.screenshot(**kwargs)
 
     # -- Routing ---------------------------------------------------
@@ -233,9 +250,14 @@ class PlaywrightPage:
         return self._stealth_bridge
 
     @property
-    def cdp(self) -> Any:
-        """CDP session for Chromium, ``None`` for Firefox/WebKit."""
-        return self._cdp_session
+    def cdp(self) -> Optional[CDPBridge]:
+        """Controller-facing CDP bridge for Chromium; ``None`` for Firefox/WebKit.
+
+        P4: this is a real :class:`CDPBridge` wrapping the raw Playwright CDP
+        session (which the stealth bridge retains), so transport presence —
+        not backend name — is the capability signal.
+        """
+        return self._cdp_bridge
 
     @property
     def backend_page(self) -> Any:
@@ -280,8 +302,20 @@ class PlaywrightEngine:
     # -- BrowserEngine protocol ------------------------------------
 
     async def start(self, config: Any = None) -> None:
-        """Launch or connect to the browser."""
+        """Launch or connect to the browser.
+
+        P2-review fix: consumes the stored (normalized) SessionConfig —
+        ``browser_type`` and ``headless`` — instead of constructor defaults
+        and a hardcoded headless flag. Unsupported browser types fail
+        explicitly rather than silently launching Chromium.
+        """
         from playwright.async_api import async_playwright
+
+        effective_cfg = config or self._config
+        browser_type = (
+            getattr(effective_cfg, "browser_type", None) or self._browser_type
+        )
+        headless = bool(getattr(effective_cfg, "headless", True))
 
         self._playwright = await async_playwright().start()
 
@@ -290,10 +324,14 @@ class PlaywrightEngine:
             "firefox": self._playwright.firefox.launch,
             "webkit": self._playwright.webkit.launch,
         }
-        launcher = launch_method.get(
-            self._browser_type, self._playwright.chromium.launch
-        )
-        self._browser = await launcher(headless=True)
+        if browser_type not in launch_method:
+            raise ValueError(
+                f"Unsupported browser type for the playwright backend: "
+                f"{browser_type!r}. Choose from: chromium, firefox, webkit."
+            )
+        launcher = launch_method[browser_type]
+        self._browser_type = browser_type
+        self._browser = await launcher(headless=headless)
         self._context = await self._browser.new_context()
 
     async def stop(self) -> None:

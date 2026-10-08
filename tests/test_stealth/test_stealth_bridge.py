@@ -211,7 +211,7 @@ class TestFacadeBridge:
         facade = SuperBrowser.__new__(SuperBrowser)
         facade._config = config
         facade._page = MagicMock()
-        facade._page.engine_page = engine_page
+        facade._page.stealth_bridge = bridge
         facade._loop_stealth = None
 
         facade._configure_stealth()

@@ -12,7 +12,7 @@ from typing import Any, Optional
 from urllib.parse import urlparse
 
 from super_browser.browser.cdp import CDPBridge
-from super_browser.browser.page import PageHandle
+from super_browser.browser.page import NormalizedPage
 from super_browser.interaction.cache import TierPreferenceCache
 from super_browser.interaction.decorator import agent_action
 from super_browser.interaction.recovery import StaleRefDetector
@@ -117,8 +117,12 @@ class MultimodalController:
 
     def __init__(
         self,
-        page: PageHandle,
-        cdp: CDPBridge,
+        # P3: the façade hands the controller a NormalizedPage. P4: the
+        # coordinate transport is OPTIONAL — transport presence, not backend
+        # name, decides whether coordinate/vision tiers exist. When omitted,
+        # it is derived from the normalized page.
+        page: NormalizedPage,
+        cdp: Optional[CDPBridge] = None,
         tier_cache: Optional[TierPreferenceCache] = None,
         vision_provider: Optional[VisionProviderFactory] = None,
         *,
@@ -127,11 +131,23 @@ class MultimodalController:
         vision_controller: Any = None,
     ) -> None:
         self._page = page
+        # P4: derive the transport from the normalized page when not supplied.
+        if cdp is None and page is not None:
+            cdp = getattr(page, "cdp", None)
         self._cdp = cdp
         self._cache = tier_cache
         self._vision_factory = vision_provider
         self._timeouts = tier_timeouts or dict(_DEFAULT_TIMEOUTS)
-        self._snapshot_provider = snapshot_provider or SnapshotProvider(cdp)
+        # P4: snapshot degradation is explicit — the provider receives the
+        # optional transport AND the page's stealth bridge, and returns a
+        # valid empty snapshot when neither exists (no None dereference).
+        stealth = None
+        engine = getattr(page, "engine_page", None) if page is not None else None
+        if engine is not None:
+            stealth = getattr(engine, "stealth_bridge", None)
+        self._snapshot_provider = snapshot_provider or SnapshotProvider(
+            self._cdp, stealth
+        )
         self._ax_snapshot: Optional[AXSnapshot] = None
         self._last_url: str = ""
         self._two_phase: bool = False
@@ -222,9 +238,10 @@ class MultimodalController:
     ) -> ActionResult:
 
         async def t1():
-            if clear_first:
-                await self._interaction_target.click(target)
-                await self._cdp.compositor_key_press("a", modifiers=2)
+            # P4: the selector tier is fully portable — EnginePage.fill()
+            # replaces the field value natively, so clear_first needs no
+            # coordinate transport. The old compositor ctrl+A here made a
+            # portable selector fill impossible without a CDPBridge.
             await self._interaction_target.fill(target, value)
             return action_result(
                 ok=True,
@@ -542,6 +559,19 @@ class MultimodalController:
         modifiers: int = 0,
     ) -> ActionResult:
         start = time.monotonic()
+        if self._cdp is None:
+            # P4: keypress is coordinate-dispatched and intentionally outside
+            # the cascade — degrade structurally instead of raising.
+            return timed_action_result(
+                ok=False,
+                start_ns=start,
+                error=ActionError(
+                    ErrorCategory.VALIDATION,
+                    "coordinate transport unavailable",
+                    recoverable=True,
+                ),
+                method=ActionMethod.COORDINATE,
+            )
         await self._cdp.compositor_key_press(key, modifiers=modifiers)
         return timed_action_result(
             ok=True,
@@ -641,10 +671,18 @@ class MultimodalController:
         if not has_vision:
             tier_order = [t for t in tier_order if t != Tier.VISION]
 
+        # P4 capability table — transport presence decides tier existence:
+        #   SELECTOR    callable supplied            -> execute
+        #   COORDINATE  cdp present                  -> execute
+        #   COORDINATE  cdp absent                   -> UNAVAILABLE
+        #   VISION      provider AND cdp present     -> execute
+        #   VISION      missing either               -> UNAVAILABLE
+        # (Vision captures through CDP and dispatches coordinates through
+        # CDP, so it inherits the coordinate requirement.)
         fn_map: dict[Tier, Optional[Callable]] = {
             Tier.SELECTOR: tier1_fn,
-            Tier.COORDINATE: tier2_fn,
-            Tier.VISION: tier3_fn,
+            Tier.COORDINATE: tier2_fn if self._cdp is not None else None,
+            Tier.VISION: tier3_fn if self._cdp is not None else None,
         }
 
         attempts: list[TierAttempt] = []
@@ -705,6 +743,10 @@ class MultimodalController:
     # =====================================================================
 
     async def _resolve_to_coordinates(self, target: str) -> Optional[tuple[float, float]]:
+        # P4: defensive guard — callers outside the cascade (e.g. stale-ref
+        # fallback) must get None, not an AttributeError, when no transport.
+        if self._cdp is None:
+            return None
         if target.startswith("@"):
             if self._ax_snapshot is None:
                 await self.capture_ax_snapshot()
@@ -758,6 +800,9 @@ class MultimodalController:
     # =====================================================================
 
     async def _vision_locate(self, description: str) -> Optional[tuple[float, float]]:
+        # P4: vision capture/dispatch both require the coordinate transport.
+        if self._cdp is None:
+            return None
         snap_result = await self._cdp.capture_screenshot(format="png")
         if not snap_result.ok or not snap_result.data:
             return None

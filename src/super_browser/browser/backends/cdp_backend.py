@@ -318,6 +318,16 @@ class CDPDirectPage:
             await self._cdp.send("Target.closeTarget", {"targetId": target_id})
         await self._ws_session.close()
 
+    async def activate(self) -> None:
+        """Not supported: CDP-direct advertises multi_tab=False (PR 1 P5).
+
+        Stored pages are not genuinely independently addressable until a
+        proper per-target CDP session implementation lands.
+        """
+        raise NotImplementedError(
+            "CDP-direct multi-tab activation is not supported (multi_tab=False)"
+        )
+
     async def content(self) -> str:
         """Get page HTML content via Runtime.evaluate."""
         result = await self._cdp.evaluate("document.documentElement.outerHTML")
@@ -605,7 +615,10 @@ class CDPDirectEngine:
             stealth_inject_before=True,
             stealth_inject_after=True,
             network_intercept=True,
-            multi_tab=True,
+            # P5: stored CDPDirectPage instances are aliases of the same
+            # websocket/session, not independently addressable targets — do
+            # not advertise multi-tab until a per-target session lands.
+            multi_tab=False,
             screenshots=True,
             name="cdp",
         )

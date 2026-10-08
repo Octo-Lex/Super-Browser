@@ -1421,10 +1421,11 @@ class ToolDispatcher:
     async def _tool_wait_for(self, arguments: dict[str, Any]) -> list[types.TextContent]:
         """Wait for exactly one page condition (selector/text/url/load_state).
 
-        Reaches the raw Patchright/Playwright Page via ``sb._page.backend_page``
-        (one hop). Do NOT use ``.raw_page`` — it is deprecated and emits a
-        DeprecationWarning. This matches existing precedent in
-        ``stealth/captcha.py``, which waits on the raw page directly.
+        Waits through the backend-neutral page adapter (P6): native
+        Patchright/Playwright semantics when the backend supplies the
+        ``wait_for_*`` family, a documented polling fallback otherwise, and
+        a structured refusal for conditions that cannot be represented
+        faithfully (e.g. ``networkidle`` without native support).
         """
         timeout_ms = arguments.get("timeout_ms", 10000)
 
@@ -1433,31 +1434,18 @@ class ToolDispatcher:
         if page is None:
             return _error_content("browser has no active page", kind="error")
 
-        raw_page = getattr(page, "backend_page", None)
-        if raw_page is None:
-            return _error_content("browser page has no backend page", kind="error")
-
         try:
-            if "selector" in arguments:
-                await raw_page.wait_for_selector(arguments["selector"], timeout=timeout_ms)
-                matched = "selector"
-            elif "text" in arguments:
-                # arg= is supported by both Patchright and Playwright (verified).
-                await raw_page.wait_for_function(
-                    "(needle) => document.body && document.body.innerText.includes(needle)",
-                    arg=arguments["text"],
-                    timeout=timeout_ms,
-                )
-                matched = "text"
-            elif "url" in arguments:
-                await raw_page.wait_for_url(arguments["url"], timeout=timeout_ms)
-                matched = "url"
-            elif "load_state" in arguments:
-                await raw_page.wait_for_load_state(arguments["load_state"], timeout=timeout_ms)
-                matched = "load_state"
-            else:
-                # Unreachable: validator guarantees exactly one condition.
-                return _error_content("no wait condition provided", kind="invalid_arguments")
+            matched = await page.wait_for(
+                selector=arguments.get("selector"),
+                text=arguments.get("text"),
+                url=arguments.get("url"),
+                load_state=arguments.get("load_state"),
+                timeout_ms=timeout_ms,
+            )
+        except NotImplementedError as exc:
+            return _error_content(str(exc), kind="invalid_arguments")
+        except ValueError as exc:
+            return _error_content(str(exc), kind="invalid_arguments")
         except Exception as e:  # noqa: BLE001 -- timeouts surface as structured errors
             return _text_content({"ok": False, "timeout": True, "reason": str(e)})
 
