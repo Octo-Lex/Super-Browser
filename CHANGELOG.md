@@ -2,6 +2,75 @@
 
 All notable changes to this project will be documented in this file.
 
+## [2.14.0] — 2026-10-08
+
+### Added — composition root and normalized page abstraction
+
+- **Engine factory** (`browser/factory.py`): one component owns backend
+  selection, mapping `patchright` / `playwright` / `selenium` / `cdp`
+  explicitly; cloak routes to `PatchrightEngine` + cloak configuration
+  (never a separate engine, never leaked into ordinary Patchright
+  construction); unsupported combinations raise `ValueError` instead of
+  silently substituting another browser.
+- Engines consume their stored config at `start()`: `browser_type` and
+  `headless` are honored per backend (`--headless=new` for Chrome,
+  `-headless` for Firefox; Safari + headless fails explicitly). Previously
+  Playwright hardcoded headless and Selenium ignored both settings unless
+  `start()` was passed a config.
+- **NormalizedPage**: the façade page is always a backend-neutral wrapper
+  owning `engine_page`, `backend_page` (escape hatch), `cdp` (optional
+  compatibility handle), `screenshot`, `selector_bounds`, `wait_for`,
+  history navigation, `attach_diagnostics`, and `stealth_bridge` — with an
+  identical representation after `start()` and after every tab operation.
+- **Capability transport**: `NormalizedPage.cdp` is `Optional[CDPBridge]`;
+  transport presence — not backend name — decides whether coordinate and
+  vision tiers execute (structural UNAVAILABLE outcomes, never
+  AttributeError probing). Selector-tier `fill` is fully portable.
+- **Engine-owned tabs**: `TabManager` stores `NormalizedPage`s created via
+  `Engine.new_page()`; the new `EnginePage.activate()` protocol member
+  activates them (Selenium window handles are captured per page; closing a
+  background tab restores the previously selected window); the initial page
+  is an unlisted base page with fallback when the last managed tab closes;
+  CDP-direct advertises `multi_tab=False` and tab operations return
+  structured refusals.
+- **History navigation** normalized per backend (Playwright native;
+  Selenium `refresh`/`back`/`forward`; CDP-direct
+  `Page.getNavigationHistory` + `Page.navigateToHistoryEntry` with a real
+  edge check), returning `HistoryResult` so callers never infer semantics
+  from `Response | None`.
+- **Composition gate**: an AST-based test enforces zero `backend_page`,
+  `query_selector`, and `engine_page.cdp` access in `agent/facade.py` and
+  `mcp_server.py`.
+- **Engine-owned shutdown**: `SuperBrowser.stop()` stops the engine exactly
+  once; non-Patchright engines (previously left running) are now actually
+  stopped, and the Patchright `BrowserSession` is never double-stopped.
+
+### Changed
+
+- **Screenshot vocabulary**: `format=` (`"png" | "jpeg"`) is the only
+  spelling; `quality` is forwarded only for JPEG; Selenium PNG output is
+  re-encoded to JPEG via Pillow. The 2.13.1 `type=`-first /
+  `TypeError`-retry compatibility probe is deleted.
+- Mode-based backend detection normalizes `SessionMode` values (the
+  previous uppercase substring match could never fire).
+- MCP `wait_for` waits through the page adapter: native semantics when the
+  backend supplies the `wait_for_*` family, a documented polling fallback
+  otherwise, and a structured refusal for conditions that cannot be
+  represented faithfully (e.g. `networkidle` without native support).
+
+### Removed
+
+- `SuperBrowser._attach_page()` and the raw-context tab reconstruction
+  path; `_set_active_page()` is the single activation path.
+- `SuperBrowser._current_frame()` (dead raw-page accessor).
+- The `type=` compatibility alias on `NormalizedPage.screenshot`.
+
+### Fixed
+
+- Selenium background-tab close restores the previously selected window;
+  `title` and `url` are window-handle-aware, so tab listings report each
+  window's own metadata instead of the selected window's.
+
 ## [2.13.1] — 2026-06-29
 
 ### Fixed

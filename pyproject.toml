@@ -4,7 +4,7 @@ build-backend = "hatchling.build"
 
 [project]
 name = "superbrowser-sdk"
-version = "2.13.1"
+version = "2.14.0"
 description = "Anti-detection agent browser SDK — stealth, budget governance, security guardrails, and structured error recovery behind one async facade"
 readme = "README.md"
 license = { text = "Apache-2.0" }
