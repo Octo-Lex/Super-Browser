@@ -215,8 +215,13 @@ class TestClose:
     """TEST-14-01-04: close() cleans up browser + resources."""
 
     def test_stop_cleans_up_session(self) -> None:
-        """stop() closes session and resets internal state."""
+        """stop() is engine-owned (P5): the engine is stopped exactly once,
+        the legacy session alias is cleared WITHOUT a second stop
+        (PatchrightEngine.stop() owns its BrowserSession), and internal
+        state resets."""
         sb = SuperBrowser()
+        mock_engine = AsyncMock()
+        sb._engine = mock_engine
         mock_session = AsyncMock()
         sb._session = mock_session
         sb._running = True
@@ -226,10 +231,12 @@ class TestClose:
         async def _test() -> None:
             await sb.stop()
             assert not sb._running
+            assert sb._engine is None
             assert sb._session is None
             assert sb._controller is None
             assert sb._page is None
-            mock_session.stop.assert_called_once()
+            mock_engine.stop.assert_awaited_once()
+            mock_session.stop.assert_not_called()
 
         asyncio.run(_test())
 

@@ -240,6 +240,10 @@ class NormalizedPage:
     async def close(self) -> None:
         await self._engine_page.close()
 
+    async def activate(self) -> None:
+        """Bring this page to the foreground (EnginePage.activate, P5)."""
+        await self._engine_page.activate()
+
     async def content(self) -> str:
         return await self._engine_page.content()
 

@@ -99,21 +99,19 @@ async def test_patchright_facade_lifecycle(tmp_path: Path) -> None:
 
 
 # ============================================================================
-# Real-browser vertical: Playwright Chromium façade — xfailed until P3–P5
+# Real-browser vertical: Playwright Chromium façade — HARD since P5
 # ============================================================================
 
 
 @pytest.mark.integration
-@pytest.mark.xfail(
-    strict=False,
-    reason="P5: legacy _session/TabManager ownership blocks Playwright tab "
-    "operations. P4 made the page representation and transport real — the "
-    "pre-tab path is hard-green in test_controller_capability.py.",
-)
 async def test_playwright_facade_lifecycle(tmp_path: Path) -> None:
-    """backend='playwright' must construct PlaywrightEngine and work end to end."""
+    """backend='playwright' must construct PlaywrightEngine and run the full
+    façade lifecycle: start → navigate → observe → screenshot → tabs (open,
+    switch, close) → back to the base page → stop. Hard gate since P5 made
+    tab ownership engine-owned."""
     pytest.importorskip("playwright")
     from super_browser.browser.backends.playwright_backend import PlaywrightEngine
+    from super_browser.browser.page import NormalizedPage
 
     fixture = tmp_path / "wiring_pw.html"
     fixture.write_text(
@@ -131,7 +129,66 @@ async def test_playwright_facade_lifecycle(tmp_path: Path) -> None:
         assert observed.ok, f"observe failed: {observed.error}"
         img, mime = await sb._capture_region_bytes(format="png")
         assert len(img) > 0
-        await sb.open_tab("about:blank")
+
+        tab_b = await sb.open_tab("about:blank")
+        assert tab_b.ok, f"open_tab failed: {tab_b.error}"
+        assert isinstance(sb._page, NormalizedPage)
+        tab_c = await sb.open_tab("about:blank")
+        assert tab_c.ok
+        switched = await sb.switch_tab(tab_b.data.tab_id)
+        assert switched.ok, f"switch_tab failed: {switched.error}"
+        closed = await sb.close_tab(tab_c.data.tab_id)
+        assert closed.ok
+        observed_after = await sb.observe()
+        assert observed_after.ok, f"observe after close failed: {observed_after.error}"
+        closed_b = await sb.close_tab(tab_b.data.tab_id)
+        assert closed_b.ok
+        base_observed = await sb.observe()
+        assert base_observed.ok, (
+            "the base page must be usable after every managed tab closes"
+        )
+    finally:
+        await sb.stop()
+
+
+# ============================================================================
+# Real-browser vertical: Patchright full multi-tab lifecycle (P5 proof)
+# ============================================================================
+
+
+@pytest.mark.integration
+async def test_patchright_multitab_lifecycle(tmp_path: Path) -> None:
+    """open A → open B → switch A → operate → close A → operate B → close B →
+    operate on the original base page → stop."""
+    from super_browser.browser.page import NormalizedPage
+
+    fixture = tmp_path / "wiring_pr.html"
+    fixture.write_text(
+        "<html><body><h1>PR TAB LIFECYCLE</h1></body></html>", encoding="utf-8"
+    )
+    sb = SuperBrowser(config=Config(browser=SessionConfig(headless=True)))
+    await sb.start()
+    try:
+        await sb.navigate(fixture.as_uri())
+        tab_a = await sb.open_tab("about:blank")
+        assert tab_a.ok
+        tab_b = await sb.open_tab("about:blank")
+        assert tab_b.ok
+        switched = await sb.switch_tab(tab_a.data.tab_id)
+        assert switched.ok
+        assert isinstance(sb._page, NormalizedPage)
+        observed_a = await sb.observe()
+        assert observed_a.ok, f"operate on A failed: {observed_a.error}"
+        closed_a = await sb.close_tab(tab_a.data.tab_id)
+        assert closed_a.ok
+        observed_b = await sb.observe()
+        assert observed_b.ok, f"operate on B after closing A failed: {observed_b.error}"
+        closed_b = await sb.close_tab(tab_b.data.tab_id)
+        assert closed_b.ok
+        base_observed = await sb.observe()
+        assert base_observed.ok, (
+            "operate on the original base page failed after all tabs closed"
+        )
     finally:
         await sb.stop()
 

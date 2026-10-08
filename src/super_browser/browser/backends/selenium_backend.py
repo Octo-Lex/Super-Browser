@@ -159,6 +159,26 @@ class SeleniumPage:
         if browser_type == "chrome":
             self._stealth_bridge = SeleniumStealthBridge(driver)
 
+        # P5: capture THIS page's window handle at construction. SeleniumPage
+        # methods route through the driver's *current* window, so without the
+        # captured handle every page would be an alias of whatever window is
+        # current. Construction happens right after the engine switches to the
+        # new window, so the capture lands on the right one.
+        self._window_handle: Any = None
+        try:
+            self._window_handle = driver.current_window_handle
+        except Exception:
+            self._window_handle = None
+
+    async def activate(self) -> None:
+        """Make this page's window the driver's current window (EnginePage P5)."""
+
+        def _sync() -> None:
+            if self._window_handle is not None:
+                self._driver.switch_to.window(self._window_handle)
+
+        await asyncio.to_thread(_sync)
+
     # -- Navigation ------------------------------------------------
 
     async def goto(self, url: str, *, wait_until: str = "load", **kwargs: Any) -> None:
@@ -179,9 +199,19 @@ class SeleniumPage:
         return self._driver.current_url
 
     async def close(self) -> None:
-        """Close current window (not the entire browser)."""
+        """Close THIS page's window.
+
+        P5: Selenium's ``driver.close()`` closes whatever window is current,
+        so the page activates its own handle first — closing a background tab
+        must not close the active one.
+        """
 
         def _sync() -> None:
+            if (
+                self._window_handle is not None
+                and self._driver.current_window_handle != self._window_handle
+            ):
+                self._driver.switch_to.window(self._window_handle)
             self._driver.close()
 
         await asyncio.to_thread(_sync)

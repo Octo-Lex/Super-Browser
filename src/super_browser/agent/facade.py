@@ -74,6 +74,10 @@ class SuperBrowser:
         self._stealth_manager: Any = None
         self._skill_registry: Any = None
         self._tab_manager: Optional[TabManager] = None
+        # P5: the initial page, kept UNLISTED by TabManager — managed-tab
+        # operations never report it, and closing the last managed tab falls
+        # back to it instead of leaving the façade on a closed page.
+        self._base_page: Optional[NormalizedPage] = None
         self._frame_stack: list[Any] = []  # stack of Frame objects
         self._network_interceptors: list[Any] = []
         self._recorder: Any = None  # Optional[SessionRecorder]
@@ -117,8 +121,11 @@ class SuperBrowser:
         # EnginePage the engine built, wrapped with the backend-neutral
         # contract (engine_page / backend_page / cdp / screenshot).
         self._page = NormalizedPage(engine_page=await self._engine.new_page())
-        # Interim until P5 retires the legacy session seam: recovery and
-        # checkpointing still accept the Patchright session when offered.
+        self._base_page = self._page
+        # Interim beyond P5: recovery still consumes a session object; the
+        # broader feature-combination contract work is later in the program.
+        # P5 removed _session from tab/lifecycle ownership — stop() is
+        # engine-owned now.
         self._session = getattr(self._engine, "session", None)
         self._controller = MultimodalController(self._page)  # P4: transport derived from the normalized page
         # Wire diagnostics listeners onto the initial page.
@@ -183,9 +190,19 @@ class SuperBrowser:
         if self._coordinator:
             await self._coordinator.stop()
             self._coordinator = None
-        if self._session:
-            await self._session.stop()
-            self._session = None
+        # P5: the ENGINE owns browser lifetime. PatchrightEngine.stop()
+        # closes its own BrowserSession, so the façade never stops both —
+        # and non-Patchright engines (previously left running because
+        # _session was None) are now actually stopped.
+        if self._engine is not None:
+            try:
+                await self._engine.stop()
+            except Exception:
+                logger.exception("Engine stop failed during façade shutdown")
+            self._engine = None
+        self._session = None  # legacy recovery alias only
+        self._tab_manager = None
+        self._base_page = None
         self._controller = None
         self._page = None
         logger.info("SuperBrowser stopped")
@@ -832,62 +849,54 @@ class SuperBrowser:
             },
         )
 
-    # -- Tab helper (CHK-07) --
+    # -- Tab helper (P5) --
 
-    async def _attach_page(self, page_obj: Any) -> None:
-        """Wire a raw Playwright Page into the facade's _page and _controller.
+    async def _set_active_page(self, page: NormalizedPage) -> None:
+        """Make *page* the façade's active page.
 
-        Shared by :meth:`open_tab` and :meth:`switch_tab`.
-
-        P3: the legacy ``PageHandle`` stays the tab adapter until P5 retires
-        this path, but what the façade stores is a ``NormalizedPage`` built
-        from the handle's surfaces — identical abstraction after tab
-        attachment as after ``start()``.
+        The single activation path shared by ``open_tab``, ``switch_tab``,
+        and active-tab closure: page reference, controller (transport is
+        derived from the normalized page), diagnostics.
         """
-        ctx = self._engine.context
-        if ctx is None:
-            raise RuntimeError("Browser context not available — engine not started?")
-        from super_browser.browser.page import PageHandle
-        cdp_session = await ctx.new_cdp_session(page_obj)
-        from super_browser.browser.cdp import CDPBridge
-        from super_browser.browser.config import SessionConfig as _SC
-        cdp = CDPBridge(cdp_session, _SC())
-        handle = PageHandle(page_obj, cdp)
-        self._page = NormalizedPage(
-            engine_page=handle.engine_page,
-            backend_page=handle.backend_page,
-            cdp=handle.cdp,
-        )
-        self._controller = MultimodalController(self._page)  # P4: transport derived from the normalized page
-        # Wire diagnostics listeners onto the new tab/switched page.
-        self._attach_diagnostics(self._page.backend_page)
+        self._page = page
+        self._controller = MultimodalController(page)
+        # P6 still owns closing this native-page access.
+        self._attach_diagnostics(page.backend_page)
 
     # -- Multi-Tab --
 
     async def open_tab(self, url: Optional[str] = None) -> ActionResult:
         """Open a new browser tab, optionally navigating to a URL.
 
+        P5: the tab is created through the engine and owned as a
+        ``NormalizedPage``; backends advertising ``multi_tab=False`` get a
+        structured refusal instead of aliased pages.
+
         :param url: Optional URL to navigate to.
         :returns: ActionResult with data=TabHandle.
         """
         start = time.monotonic()
-        if not self._session:
+        if self._engine is None:
             return action_result(ok=False, error=ActionError(ErrorCategory.BROWSER_CRASH, "Browser not started"))
-        ctx = self._engine.context
-        if ctx is None:
-            return action_result(ok=False, error=ActionError(ErrorCategory.BROWSER_CRASH, "Browser context not available"))
-        if self._tab_manager is None:
-            self._tab_manager = TabManager(ctx)
+        if self._engine is not None and not self._engine.capabilities.multi_tab:
+            return action_result(
+                ok=False,
+                error=ActionError(
+                    ErrorCategory.VALIDATION,
+                    f"multi-tab is not supported by backend "
+                    f"{self._engine.capabilities.name!r}",
+                ),
+            )
         params = {"url": url or ""}
         sec = await self._check_facade_security("open_tab", params, url=url or "")
         if sec is not None:
             return sec
         url = params["url"] or None  # consume potentially redacted URL
         try:
+            if self._tab_manager is None:
+                self._tab_manager = TabManager(self._engine, self._base_page)
             tab = await self._tab_manager.open_tab(url)
-            # Update page reference and controller to new tab
-            page_obj = self._tab_manager.get_page(tab.tab_id)
-            await self._attach_page(page_obj)
+            await self._set_active_page(self._tab_manager.active_page())
             return timed_action_result(ok=True, start_ns=start, data=tab)
         except Exception as e:
             return timed_action_result(ok=False, start_ns=start, error=ActionError(ErrorCategory.NAVIGATION, str(e)))
@@ -901,6 +910,15 @@ class SuperBrowser:
         start = time.monotonic()
         if not self._tab_manager:
             return action_result(ok=False, error=ActionError(ErrorCategory.BROWSER_CRASH, "No tabs open"))
+        if self._engine is not None and not self._engine.capabilities.multi_tab:
+            return action_result(
+                ok=False,
+                error=ActionError(
+                    ErrorCategory.VALIDATION,
+                    f"multi-tab is not supported by backend "
+                    f"{self._engine.capabilities.name!r}",
+                ),
+            )
         params = {"tab_id": tab_id}
         sec = await self._check_facade_security("switch_tab", params, security_level="sensitive")
         if sec is not None:
@@ -908,8 +926,7 @@ class SuperBrowser:
         tab_id = params["tab_id"]
         try:
             tab = await self._tab_manager.switch_tab(tab_id)
-            page_obj = self._tab_manager.get_page(tab_id)
-            await self._attach_page(page_obj)
+            await self._set_active_page(self._tab_manager.active_page())
             return timed_action_result(ok=True, start_ns=start, data=tab)
         except KeyError as e:
             return timed_action_result(ok=False, start_ns=start, error=ActionError(ErrorCategory.SELECTOR_NOT_FOUND, str(e)))
@@ -929,6 +946,12 @@ class SuperBrowser:
         tab_id = params["tab_id"]
         try:
             await self._tab_manager.close_tab(tab_id)
+            # P5: reactivate — the most recent remaining managed tab, or the
+            # unlisted base page when the last managed tab just closed.
+            if self._tab_manager.active_tab_id is not None:
+                await self._set_active_page(self._tab_manager.active_page())
+            elif self._base_page is not None:
+                await self._set_active_page(self._base_page)
             return timed_action_result(ok=True, start_ns=start, data={"closed_tab": tab_id})
         except KeyError as e:
             return timed_action_result(ok=False, start_ns=start, error=ActionError(ErrorCategory.SELECTOR_NOT_FOUND, str(e)))

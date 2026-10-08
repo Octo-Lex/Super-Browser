@@ -140,6 +140,10 @@ class PlaywrightPage:
         """Get page HTML content."""
         return await self._page.content()
 
+    async def activate(self) -> None:
+        """Bring this page to the foreground (EnginePage P5)."""
+        await self._page.bring_to_front()
+
     # -- Interaction -----------------------------------------------
 
     async def click(self, selector: str, **kwargs: Any) -> None:

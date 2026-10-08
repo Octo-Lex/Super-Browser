@@ -111,6 +111,10 @@ class EnginePage(Protocol):
         """Close this page."""
         ...
 
+    async def activate(self) -> None:
+        """Bring this page to the foreground (tab activation; PR 1 P5)."""
+        ...
+
     async def content(self) -> str:
         """Get page HTML content."""
         ...
