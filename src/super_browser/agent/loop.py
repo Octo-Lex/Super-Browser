@@ -24,6 +24,7 @@ from super_browser.agent.types import (
     StepResult,
     StreamEvent,
 )
+from super_browser.budget.client import BudgetExhaustedError
 from super_browser.results import (
     ActionError,
     ActionResult,
@@ -50,7 +51,6 @@ class AgentLoop:
         event_callback: Optional[Callable[[StepEvent, dict], Awaitable[None]]] = None,
         stagnation_threshold: int = 3,
         recovery_coordinator: Optional[Any] = None,
-        budget_client: Optional[Any] = None,
         flow_logger: Optional[Any] = None,
         security_manager: Optional[Any] = None,
         stealth_manager: Optional[Any] = None,
@@ -67,7 +67,6 @@ class AgentLoop:
         self._event_callback = event_callback
         self._stagnation_threshold = stagnation_threshold
         self._recovery_coordinator = recovery_coordinator
-        self._budget_client = budget_client
         self._flow_logger = flow_logger
         self._security_manager = security_manager
         self._stealth_manager = stealth_manager
@@ -289,6 +288,23 @@ class AgentLoop:
                     stalled_count = 0
                     await self._emit(StepEvent.PLAN_UPDATED, {"step_number": step_num, "replan_count": replan_count})
 
+            except BudgetExhaustedError as exc:
+                # P2 (PR 2): the governed LLM refused the call — the daily cap
+                # is spent. Terminate the run with a structured completion
+                # reason instead of stepping into guaranteed-failure steps.
+                duration = (time.monotonic() - step_start) * 1000
+                steps.append(StepResult(
+                    step_num, "budget_exhausted", {}, None, duration,
+                    error=str(exc),
+                ))
+                await self._emit(StepEvent.ABORT, {
+                    "step_number": step_num, "reason": "budget_exhausted",
+                    "error": str(exc),
+                })
+                return self._build_result(
+                    instruction, steps, plan, "budget_exhausted",
+                    start, loop_detections, replan_count,
+                )
             except Exception as exc:
                 duration = (time.monotonic() - step_start) * 1000
                 # Debug artifact capture

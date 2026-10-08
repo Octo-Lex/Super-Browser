@@ -25,7 +25,6 @@ class SubagentDelegator:
         max_concurrency: int = 4,
         max_steps_per_child: int = 50,
         recovery_coordinator: Optional[Any] = None,
-        budget_client: Optional[Any] = None,
         flow_logger: Optional[Any] = None,
         security_manager: Optional[Any] = None,
         stealth_manager: Optional[Any] = None,
@@ -36,7 +35,6 @@ class SubagentDelegator:
         self._max_concurrency = max_concurrency
         self._max_steps = max_steps_per_child
         self._recovery_coordinator = recovery_coordinator
-        self._budget_client = budget_client
         self._flow_logger = flow_logger
         self._security_manager = security_manager
         self._stealth_manager = stealth_manager
@@ -119,7 +117,6 @@ class SubagentDelegator:
                 llm_client=self._llm,
                 max_steps=self._max_steps,
                 recovery_coordinator=self._recovery_coordinator,
-                budget_client=self._budget_client,
                 flow_logger=self._flow_logger,
                 security_manager=self._security_manager,
                 stealth_manager=self._stealth_manager,

@@ -50,6 +50,11 @@ class BudgetCascadeClient:
         self._llm_client = llm_client
         self._estimator = CostEstimator()
 
+    @property
+    def budget_remaining(self) -> float:
+        """Remaining daily budget in USD (PR 2: the facade exposes this)."""
+        return self._governor.daily_remaining
+
     async def call(
         self,
         messages: list[dict],

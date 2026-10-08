@@ -148,7 +148,7 @@ class SuperBrowser:
         # -- Budget --
         if cfg.agent.enable_budget:
             from super_browser.budget import (
-                BudgetAwareLLMClient,
+                BudgetCascadeClient,
                 CircuitBreaker,
                 ContextCompressor,
                 CredentialPool,
@@ -156,12 +156,29 @@ class SuperBrowser:
                 TokenBudgetGovernor,
             )
 
-            governor = TokenBudgetGovernor()
+            # P2 (PR 2): the governor is constructed with the USER's caps
+            # from Config.budget — not package defaults.
+            governor = TokenBudgetGovernor(config=cfg.budget)
             cascade = ModelCascade(governor=governor)
             pool = CredentialPool()
             cb = CircuitBreaker()
-            comp = ContextCompressor()
-            self._budget_client = BudgetAwareLLMClient(governor, cascade, pool, cb, comp)
+            # P2 (PR 2): the loop's LLM is the GOVERNED client — every
+            # planning path (propose_action / create_plan / replan) traverses
+            # the daily cap and raises BudgetExhaustedError when it is hit.
+            if self._llm_client is not None:
+                from super_browser.agent.llm.budget_aware import (
+                    BudgetAwareLLMClient,
+                )
+
+                self._llm_client = BudgetAwareLLMClient(
+                    self._llm_client, governor, model=cfg.agent.llm_model
+                )
+                comp = ContextCompressor(budget_client=self._llm_client)
+            else:
+                comp = ContextCompressor()
+            self._budget_client = BudgetCascadeClient(
+                governor, cascade, pool, cb, comp
+            )
         # -- Tracing --
         if cfg.tracing.enabled or cfg.agent.trace_enabled:
             from super_browser.tracing import FlowLogger
@@ -356,18 +373,21 @@ class SuperBrowser:
         if not self._controller:
             return action_result(ok=False, error=ActionError(ErrorCategory.BROWSER_CRASH, "Browser not started. Call await sb.start() first."))
 
+        # P2 (PR 2): a stale abort must not poison this run — each run starts
+        # with a clean signal, and abort() during the run terminates it.
+        self._abort_signal.clear()
         loop = AgentLoop(
             controller=self._controller,
             registry=self._registry,
             llm_client=self._llm_client,
             max_steps=max_steps,
             recovery_coordinator=self._coordinator,
-            budget_client=self._budget_client,
             flow_logger=self._flow_logger,
             security_manager=self._security_manager,
             stealth_manager=getattr(self, '_stealth_manager', None),
             debug_config=getattr(self._config, 'debug_config', None),
             retry_budget=getattr(self._config, 'retry_budget', None),
+            abort_signal=self._abort_signal,
         )
         # Wire memory into the loop if enabled
         if self._memory_store is not None and self._page:
@@ -381,7 +401,11 @@ class SuperBrowser:
             ok=result.completion_reason == "success",
             data=DelegatedResult(
                 instruction=instruction,
-                completion_reason=CompletionReason.SUCCESS if result.completion_reason == "success" else CompletionReason.ERROR,
+                completion_reason={
+                    "success": CompletionReason.SUCCESS,
+                    "budget_exhausted": CompletionReason.BUDGET_EXHAUSTED,
+                    "abort": CompletionReason.CANCELLED,
+                }.get(result.completion_reason, CompletionReason.ERROR),
                 summary=f"Completed in {result.total_steps} steps",
                 steps_executed=result.total_steps,
                 budget_remaining=self._budget_client.budget_remaining if self._budget_client else 0.0,
@@ -424,18 +448,21 @@ class SuperBrowser:
                 "No LLM client configured. Pass llm_client= to SuperBrowser()."
             )
 
+        # P2 (PR 2): a stale abort must not poison this run — each run starts
+        # with a clean signal, and abort() during the run terminates it.
+        self._abort_signal.clear()
         loop = AgentLoop(
             controller=self._controller,
             registry=self._registry,
             llm_client=self._llm_client,
             max_steps=max_steps,
             recovery_coordinator=self._coordinator,
-            budget_client=self._budget_client,
             flow_logger=self._flow_logger,
             security_manager=self._security_manager,
             stealth_manager=getattr(self, '_stealth_manager', None),
             debug_config=getattr(self._config, 'debug_config', None),
             retry_budget=getattr(self._config, 'retry_budget', None),
+            abort_signal=self._abort_signal,
         )
         if self._memory_store is not None and self._page:
             try:
@@ -1244,7 +1271,6 @@ class SuperBrowser:
             self._session, self._registry, self._llm_client,
             max_concurrency=max_concurrency,
             recovery_coordinator=self._coordinator,
-            budget_client=self._budget_client,
             flow_logger=self._flow_logger,
             security_manager=self._security_manager,
             stealth_manager=self._stealth_manager,

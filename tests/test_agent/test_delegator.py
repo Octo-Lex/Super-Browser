@@ -108,7 +108,6 @@ class TestSubagentDelegator:
             mock_recovery.execute_with_recovery = AsyncMock(
                 side_effect=lambda action_fn, **kw: action_fn()
             )
-            mock_budget = MagicMock()
             mock_security = MagicMock()
             mock_flow = MagicMock()
 
@@ -130,7 +129,6 @@ class TestSubagentDelegator:
                 session, registry, ActionThenDoneLLM(),
                 max_concurrency=2,
                 recovery_coordinator=mock_recovery,
-                budget_client=mock_budget,
                 flow_logger=mock_flow,
                 security_manager=mock_security,
             )

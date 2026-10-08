@@ -86,3 +86,6 @@ analysis/
 
 # Agent UI-state config (workspace-local, not SDK artifacts)
 labels/
+
+# Local smoke-test virtualenv (generated, never shipped)
+.venv-smoke/

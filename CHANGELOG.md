@@ -44,9 +44,30 @@ All notable changes to this project will be documented in this file.
 - **Engine-owned shutdown**: `SuperBrowser.stop()` stops the engine exactly
   once; non-Patchright engines (previously left running) are now actually
   stopped, and the Patchright `BrowserSession` is never double-stopped.
+- **Governed LLM (PR 2)**: with budget governance enabled, the agent loop's
+  LLM is the governed client — every planning path (`propose_action`,
+  `create_plan`, `replan`) traverses the daily cap and raises
+  `BudgetExhaustedError` when it is spent. The agent loop translates that
+  into a `budget_exhausted` completion (`CompletionReason.BUDGET_EXHAUSTED`)
+  instead of stepping into guaranteed-failure calls. Context-compressor
+  costs are recorded through the same governed client.
 
 ### Changed
 
+- **Budget caps are honored (PR 2)**: `TokenBudgetGovernor` is constructed
+  from the user's `Config.budget` — previously the user's caps were silently
+  ignored in favor of package defaults ($10 daily). A tiny configured cap
+  now demonstrably blocks the agent's second LLM call.
+- **Abort lifecycle (PR 2)**: `SuperBrowser.abort()` terminates an active
+  `act()`/`act_stream()` run (mapped to `CompletionReason.CANCELLED`), and
+  each new run starts with a cleared signal — a stale abort no longer
+  poisons subsequent runs. Previously the abort signal was never connected
+  to the loop.
+- `SubagentDelegator` and `AgentLoop` no longer accept an unused
+  `budget_client` side-channel; budget governance flows through the
+  governed LLM client. The `BudgetAwareLLMClient` alias on the budget
+  package is removed (it collided with the facade-facing governed client in
+  `agent.llm.budget_aware`); the cascade client is `BudgetCascadeClient`.
 - **Screenshot vocabulary**: `format=` (`"png" | "jpeg"`) is the only
   spelling; `quality` is forwarded only for JPEG; Selenium PNG output is
   re-encoded to JPEG via Pillow. The 2.13.1 `type=`-first /

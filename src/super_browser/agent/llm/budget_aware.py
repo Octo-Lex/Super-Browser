@@ -14,8 +14,9 @@ import logging
 from typing import Any
 
 from super_browser.agent.llm.protocol import LLMClient
+from super_browser.budget.client import BudgetExhaustedError
 from super_browser.budget.governor import TokenBudgetGovernor
-from super_browser.budget.types import TokenUsageRecord
+from super_browser.budget.types import BudgetScope, TokenUsageRecord
 
 logger = logging.getLogger(__name__)
 
@@ -92,6 +93,22 @@ class BudgetAwareLLMClient:
         """Remaining daily budget in USD."""
         return self._governor.daily_remaining
 
+    # -- Budget enforcement (PR 2) --------------------------------------------
+
+    def _enforce(self, action_name: str) -> None:
+        """Refuse the call when the daily cap is already spent.
+
+        Records land after each call, so this pre-call check blocks the
+        FIRST call that would exceed the cap's remainder. Raises
+        :class:`BudgetExhaustedError`, which the agent loop translates into
+        a ``budget_exhausted`` completion.
+        """
+        block = self._governor.check_budget(
+            BudgetScope.DAILY, estimated_cost_usd=0.0
+        )
+        if block is not None:
+            raise BudgetExhaustedError(block)
+
     # -- LLMClient interface --------------------------------------------------
 
     async def propose_action(
@@ -101,6 +118,7 @@ class BudgetAwareLLMClient:
         tools: list[dict] | None = None,
     ) -> dict:
         """Delegate to the wrapped client and record cost."""
+        self._enforce("propose_action")
         result = await self._client.propose_action(prompt, tools=tools)
         self._record(result, action_name="propose_action")
         return result
@@ -112,6 +130,7 @@ class BudgetAwareLLMClient:
         tools: list[dict],
     ) -> list[dict]:
         """Delegate to the wrapped client and record cost."""
+        self._enforce("create_plan")
         result = await self._client.create_plan(instruction, tools=tools)
         self._record(result, action_name="create_plan")
         return result
@@ -125,6 +144,7 @@ class BudgetAwareLLMClient:
         error: str,
     ) -> list[dict]:
         """Delegate to the wrapped client and record cost."""
+        self._enforce("replan")
         result = await self._client.replan(
             instruction=instruction,
             original_plan=original_plan,
