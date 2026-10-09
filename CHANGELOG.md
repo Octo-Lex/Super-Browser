@@ -2,6 +2,17 @@
 
 All notable changes to this project will be documented in this file.
 
+## [Unreleased]
+
+### Added — CI gates (Step 7)
+
+- Dedicated CI gates: a required composition-contract job (browsers and
+  Tesseract provisioned, skips fail the gate) and a browser-integration
+  job running real Patchright and Playwright verticals through the public
+  facade — including dead-page MCP recovery — with an executed-count check
+  and exact-vertical identity verification (six required verticals must
+  run; a skipped or missing vertical fails the gate).
+
 ## [2.14.0] — 2026-10-09
 
 ### Added — composition root and normalized page abstraction
@@ -90,7 +101,6 @@ All notable changes to this project will be documented in this file.
   deny verdict blocks the action with a SECURITY error before execution),
   and the MCP default-mode refusal contract (a mutation returns a
   structured policy refusal, never unknown-tool).
-
 ### Changed
 
 - **Budget caps are honored (PR 2)**: `TokenBudgetGovernor` is constructed

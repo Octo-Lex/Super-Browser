@@ -77,6 +77,7 @@ def _headless() -> Config:
 
 
 @pytest.mark.integration
+@pytest.mark.browser_integration
 async def test_patchright_facade_lifecycle(tmp_path: Path) -> None:
     """start → navigate → observe → screenshot → tab operation → stop."""
     fixture = tmp_path / "wiring.html"
@@ -104,6 +105,7 @@ async def test_patchright_facade_lifecycle(tmp_path: Path) -> None:
 
 
 @pytest.mark.integration
+@pytest.mark.browser_integration
 async def test_playwright_facade_lifecycle(tmp_path: Path) -> None:
     """backend='playwright' must construct PlaywrightEngine and run the full
     façade lifecycle: start → navigate → observe → screenshot → tabs (open,
@@ -157,6 +159,7 @@ async def test_playwright_facade_lifecycle(tmp_path: Path) -> None:
 
 
 @pytest.mark.integration
+@pytest.mark.browser_integration
 async def test_patchright_multitab_lifecycle(tmp_path: Path) -> None:
     """open A → open B → switch A → operate → close A → operate B → close B →
     operate on the original base page → stop."""

@@ -36,6 +36,77 @@ jobs:
           src/super_browser/agent/loop.py
           --ignore-missing-imports
 
+
+  # Step 7 gate 2: the composition contracts run as a REQUIRED job —
+  # browsers and Tesseract are provisioned so every contract EXECUTES.
+  # A skipped contract fails the gate (no silent pass-by-skip).
+  composition-gate:
+    needs: [lint, mypy-check]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install package with dev deps
+        run: pip install -e ".[dev,all]"
+      - name: Install Patchright browser
+        run: python -m patchright install chromium
+      - name: Install Playwright browser
+        run: python -m playwright install chromium
+      - name: Install Tesseract (OCR contract executes, never skips)
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y tesseract-ocr
+          tesseract --version
+      - name: Run composition contracts (skips fail the gate)
+        run: |
+          set -o pipefail
+          python -m pytest tests/test_composition/ -v 2>&1 | tee composition-gate.txt
+          if grep -E "SKIPPED|[0-9]+ skipped" composition-gate.txt; then
+            echo "::error::A required composition contract was skipped"
+            exit 1
+          fi
+
+  # Step 7 gate 3: real Patchright + Playwright verticals through the
+  # public facade, plus real dead-page MCP recovery. The executed-count
+  # check ensures the verticals RAN rather than silently skipped.
+  browser-integration-gate:
+    needs: [lint, mypy-check]
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: Install package with dev deps
+        run: pip install -e ".[dev,all]"
+      - name: Install Patchright browser
+        run: python -m patchright install chromium
+      - name: Install Playwright browser
+        run: python -m playwright install chromium
+      - name: Run browser-integration verticals (must execute)
+        run: |
+          set -o pipefail
+          python -m pytest tests/test_composition/ -m browser_integration -v 2>&1 | tee browser-gate.txt
+          if grep -qE "SKIPPED" browser-gate.txt; then
+            echo "::error::A browser-integration vertical was skipped"
+            exit 1
+          fi
+          # Exactly the six required verticals must run — a count floor
+          # alone would accept a subset after one loses its marker.
+          passed=$(grep -oE "[0-9]+ passed" browser-gate.txt | grep -oE "^[0-9]+" | head -1)
+          if [ "${passed:-0}" -lt 6 ]; then
+            echo "::error::Browser-integration gate did not execute all six required verticals (passed=${passed:-0})"
+            exit 1
+          fi
+          for vertical in             test_patchright_facade_lifecycle             test_patchright_multitab_lifecycle             test_playwright_facade_lifecycle             test_patchright_browser_integration_gate             test_playwright_browser_integration_gate             test_mcp_dead_page_recovery; do
+            grep -q "$vertical" browser-gate.txt || {
+              echo "::error::Required vertical missing from the run: $vertical"
+              exit 1
+            }
+          done
+
   test:
     needs: [lint, mypy-check]
     strategy:
