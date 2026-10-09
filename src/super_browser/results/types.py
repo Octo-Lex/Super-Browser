@@ -205,7 +205,10 @@ class ActionResult:
     """
     ok: bool
     data: Any = None
-    error: Optional[ActionError] = None
+    # P2-review: historical call sites pass plain strings (e.g.
+    # "vision_unavailable"); the declared type reflects that runtime
+    # contract instead of silently mistyping them.
+    error: Optional[ActionError | str] = None
     meta: ResultMeta = field(default_factory=lambda: ResultMeta(
         trace_id=str(uuid.uuid4()), duration_ms=0.0,
     ))
@@ -240,7 +243,12 @@ class ActionResult:
     @classmethod
     def from_dict(cls, d: dict) -> ActionResult:
         meta = ResultMeta.from_dict(d["meta"])
-        error = ActionError.from_dict(d["error"]) if d.get("error") else None
+        raw_error = d.get("error")
+        error = (
+            ActionError.from_dict(raw_error)
+            if isinstance(raw_error, dict)
+            else (ActionError(ErrorCategory.UNKNOWN, str(raw_error)) if raw_error else None)
+        )
         return cls(
             ok=d["ok"],
             data=d.get("data"),
@@ -297,7 +305,7 @@ def _resolve_trace_id() -> str:
 def action_result(
     ok: bool,
     data: Any = None,
-    error: Optional[ActionError] = None,
+    error: Optional[ActionError | str] = None,
     method: Optional[ActionMethod] = None,
     screenshot_hash: Optional[str] = None,
     token_cost: float = 0.0,

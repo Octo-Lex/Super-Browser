@@ -152,6 +152,9 @@ warn_unused_ignores = false
 module = "patchright.*"
 ignore_missing_imports = true
 [[tool.mypy.overrides]]
+module = ["jsonschema", "pytesseract"]
+ignore_missing_imports = true
+[[tool.mypy.overrides]]
 module = "httpx.*"
 ignore_missing_imports = true
 

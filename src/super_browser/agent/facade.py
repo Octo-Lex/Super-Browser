@@ -188,8 +188,8 @@ class SuperBrowser:
         # -- Tracing --
         if cfg.tracing.enabled or cfg.agent.trace_enabled:
             from super_browser.tracing import FlowLogger
-            from super_browser.tracing.sinks import ConsoleSink
-            sinks = [ConsoleSink()]
+            from super_browser.tracing.sinks import ConsoleSink, TraceSink
+            sinks: list[TraceSink] = [ConsoleSink()]
             trace_dir = cfg.tracing.output_dir or cfg.agent.trace_output_dir
             if trace_dir:
                 from pathlib import Path
@@ -325,7 +325,7 @@ class SuperBrowser:
         history = await self._page.go_back(wait_until=wait_until)
         if not history.navigated:
             return action_result(ok=False, error=ActionError(
-                ErrorCategory.PAGE_ERROR, "No history entry to go back to"))
+                ErrorCategory.VALIDATION, "No history entry to go back to"))
         return timed_action_result(
             ok=True, start_ns=start, data={"url": self._page.url},
             method=ActionMethod.SELECTOR,
@@ -344,7 +344,7 @@ class SuperBrowser:
         history = await self._page.go_forward(wait_until=wait_until)
         if not history.navigated:
             return action_result(ok=False, error=ActionError(
-                ErrorCategory.PAGE_ERROR, "No history entry to go forward to"))
+                ErrorCategory.VALIDATION, "No history entry to go forward to"))
         return timed_action_result(
             ok=True, start_ns=start, data={"url": self._page.url},
             method=ActionMethod.SELECTOR,
@@ -666,7 +666,7 @@ class SuperBrowser:
 
             from PIL import Image as PILImage
 
-            img = PILImage.open(BytesIO(img_bytes))
+            img: PILImage.Image = PILImage.open(BytesIO(img_bytes))
             x, y, w, h = crop_bounds
             img = img.crop((x, y, x + w, y + h))
             out = BytesIO()
@@ -709,7 +709,7 @@ class SuperBrowser:
 
         # Check OCR availability early.
         try:
-            import pytesseract  # noqa: F401
+            import pytesseract  # type: ignore[import-untyped]  # noqa: F401
             from PIL import Image  # noqa: F401
         except ImportError:
             raise RuntimeError(
@@ -1224,7 +1224,7 @@ class SuperBrowser:
         start = time.monotonic()
         if not self._page:
             return action_result(ok=False, error=ActionError(ErrorCategory.BROWSER_CRASH, "Browser not started"))
-        params = {"pattern": pattern, "body": body, "content_type": content_type, "status": status}
+        params: dict[str, Any] = {"pattern": pattern, "body": body, "content_type": content_type, "status": status}
         sec = await self._check_facade_security("mock_response", params, security_level="dangerous")
         if sec is not None:
             return sec

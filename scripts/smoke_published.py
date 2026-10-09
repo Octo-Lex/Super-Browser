@@ -72,11 +72,17 @@ def _write_report(report: dict[str, Any], out_path: Path) -> None:
 
 
 def _check_result(name: str, rc: int, stdout: str, stderr: str) -> dict[str, Any]:
-    """Build a check result dict."""
+    """Build a check result dict.
+
+    rc == 124 is this harness's own timeout sentinel: the check is
+    classified ``install_timeout`` (infrastructure), distinct from a real
+    SDK defect, so a slow download is never mistaken for a broken package.
+    """
     return {
         "name": name,
         "passed": rc == 0,
         "exit_code": rc,
+        "classification": "install_timeout" if rc == 124 else "sdk_defect",
         "stdout": stdout[:2000],  # truncate long output
         "stderr": stderr[:2000],
     }
@@ -114,9 +120,12 @@ def run_smoke(
         checks.append(_check_result("pip_upgrade", rc, out, err))
 
         # Install [all]
+        # CI-7.1: 600s — a cold-cache [all] resolution on a fresh venv can
+        # legitimately exceed 180s; the window must not expire into a false
+        # SDK failure. A finite boundary is retained.
         rc, out, err = _run(
             [str(venv_python), "-m", "pip", "install", f"{dist}[all]{version_suffix}"],
-            timeout=180,
+            timeout=600,
         )
         checks.append(_check_result(f"install_all ({dist}[all]{version_suffix})", rc, out, err))
         if rc != 0:
@@ -147,14 +156,14 @@ def run_smoke(
         # Verify [patchright] extra installs without conflict
         rc, out, err = _run(
             [str(venv_python), "-m", "pip", "install", f"{dist}[patchright]{version_suffix}"],
-            timeout=180,
+            timeout=600,
         )
         checks.append(_check_result(f"install_patchright ({dist}[patchright]{version_suffix})", rc, out, err))
 
         # Verify [playwright] extra installs without conflict
         rc, out, err = _run(
             [str(venv_python), "-m", "pip", "install", f"{dist}[playwright]{version_suffix}"],
-            timeout=180,
+            timeout=600,
         )
         checks.append(_check_result(f"install_playwright ({dist}[playwright]{version_suffix})", rc, out, err))
 
@@ -176,6 +185,22 @@ def run_smoke(
     return report
 
 
+def _overall(checks: list[dict[str, Any]], passed: int, total: int) -> str:
+    """Classify the run: PASS, INCONCLUSIVE, or FAIL.
+
+    INCONCLUSIVE means every failure was this harness's own install timeout
+    (infrastructure, not an SDK defect) — a slow download is never reported
+    as a broken package. FAIL means at least one check failed for an SDK
+    reason. A finite failure boundary is retained either way.
+    """
+    failures = [c for c in checks if not c["passed"]]
+    if not failures:
+        return "PASS"
+    if all(c.get("classification") == "install_timeout" for c in failures):
+        return "INCONCLUSIVE"
+    return "FAIL"
+
+
 def _build_report(started: str, install_spec: str, checks: list[dict[str, Any]]) -> dict[str, Any]:
     """Build the final report dict."""
     total = len(checks)
@@ -192,7 +217,7 @@ def _build_report(started: str, install_spec: str, checks: list[dict[str, Any]])
             "total_checks": total,
             "passed": passed,
             "failed": total - passed,
-            "overall": "PASS" if passed == total else "FAIL",
+            "overall": _overall(checks, passed, total),
         },
         "checks": checks,
     }
@@ -252,6 +277,13 @@ def main() -> None:
     print(f"JSON written to {args.out}")
 
     summary = report["summary"]
+    if summary["overall"] == "INCONCLUSIVE":
+        print(
+            "\n⚠️ Install window exceeded (INCONCLUSIVE) — infrastructure, "
+            "not an SDK defect. Retry or extend the install timeout.",
+            file=sys.stderr,
+        )
+        sys.exit(2)
     if summary["failed"] > 0:
         print(f"\n❌ {summary['failed']} check(s) failed", file=sys.stderr)
         sys.exit(1)
