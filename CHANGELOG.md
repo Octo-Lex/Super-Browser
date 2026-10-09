@@ -54,9 +54,12 @@ All notable changes to this project will be documented in this file.
   underlying LLM is never called. The agent loop translates exhaustion
   into a `budget_exhausted` completion
   (`CompletionReason.BUDGET_EXHAUSTED`) instead of stepping into
-  guaranteed-failure calls. Admission is estimated-cost governance, not an
-  absolute billing guarantee; actual provider usage is recorded after each
-  call.
+  guaranteed-failure calls. Provider-reported token usage is recorded for
+  completed action calls and streams when available. Planning and
+  replanning calls record clearly labeled conservative estimates because
+  their response contracts do not expose provider usage. Admission is
+  based on projected cost and does not guarantee an absolute billing
+  ceiling.
 - **Token streaming preserved under governance (PR 2)**: the governed
   client implements `propose_action_stream` — admission runs before the
   first token, token events are forwarded unchanged, and usage is recorded
