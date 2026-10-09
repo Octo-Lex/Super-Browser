@@ -221,11 +221,30 @@ class ActionResult:
     def to_json(self) -> str:
         return json.dumps(self.to_dict(), default=str)
 
+    def _error_to_dict(self) -> Optional[dict]:
+        """Serialize the error to the canonical ActionError dict shape.
+
+        Historical call sites store plain strings (e.g.
+        "vision_unavailable"); those serialize as UNKNOWN-category errors so
+        the shape stays consistent and the message stays redactable.
+        """
+        if not self.error:
+            return None
+        if isinstance(self.error, str):
+            return {
+                "category": ErrorCategory.UNKNOWN,
+                "message": self.error,
+                "selector": None,
+                "recoverable": True,
+                "retry_hint": None,
+            }
+        return self.error.to_dict()
+
     def to_dict(self) -> dict:
         d = {
             "ok": self.ok,
             "data": _serialize_data(self.data),
-            "error": self.error.to_dict() if self.error else None,
+            "error": self._error_to_dict(),
             "meta": self.meta.to_dict(),
         }
         d["result_category"] = self.result_category
@@ -273,6 +292,8 @@ class ActionResult:
         :raises RuntimeError: When ok is False, with error details.
         """
         if not self.ok and self.error:
+            if isinstance(self.error, str):
+                raise RuntimeError(self.error)
             raise RuntimeError(f"{self.error.category.value}: {self.error.message}")
         elif not self.ok:
             raise RuntimeError("Action failed with no error detail")

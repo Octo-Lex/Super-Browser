@@ -78,11 +78,19 @@ def _check_result(name: str, rc: int, stdout: str, stderr: str) -> dict[str, Any
     classified ``install_timeout`` (infrastructure), distinct from a real
     SDK defect, so a slow download is never mistaken for a broken package.
     """
+    # P2-review: classify timeouts by OPERATION, not exit code alone — a
+    # hung import or CLI invocation is an SDK defect even though the
+    # harness surfaces it as a timeout. Only installation operations get
+    # the infrastructure classification.
+    if rc == 124 and name.startswith("install"):
+        classification = "install_timeout"
+    else:
+        classification = "sdk_defect"
     return {
         "name": name,
         "passed": rc == 0,
         "exit_code": rc,
-        "classification": "install_timeout" if rc == 124 else "sdk_defect",
+        "classification": classification,
         "stdout": stdout[:2000],  # truncate long output
         "stderr": stderr[:2000],
     }

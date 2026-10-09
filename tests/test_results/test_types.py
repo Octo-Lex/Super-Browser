@@ -132,3 +132,64 @@ class TestFactories:
         r1 = action_result(ok=True)
         r2 = action_result(ok=True)
         assert r1.meta.trace_id != r2.meta.trace_id
+
+
+# ============================================================================
+# P2-review: string errors are first-class — serialization, raising,
+# redaction, and round-trip must not assume ActionError instances.
+# ============================================================================
+
+
+class TestStringErrorContract:
+    """Historical call sites store plain strings on ActionResult.error
+    (e.g. "vision_unavailable"). Serialization, raising, redaction, and
+    round-trip must all handle that contract."""
+
+    def _str_error_result(self) -> ActionResult:
+        result = action_result(ok=False)
+        result.error = "vision_unavailable"
+        return result
+
+    def test_to_dict_normalizes_string_error(self) -> None:
+        d = self._str_error_result().to_dict()
+        assert d["error"]["category"] == ErrorCategory.UNKNOWN
+        assert d["error"]["message"] == "vision_unavailable"
+        assert d["error"]["recoverable"] is True
+
+    def test_to_json_handles_string_error(self) -> None:
+        result = self._str_error_result()
+        parsed = json.loads(result.to_json())
+        assert parsed["error"]["message"] == "vision_unavailable"
+
+    def test_raise_for_error_uses_string_directly(self) -> None:
+        import pytest
+
+        result = self._str_error_result()
+        with pytest.raises(RuntimeError, match="vision_unavailable"):
+            result.raise_for_error()
+
+    def test_round_trip_preserves_string_error_message(self) -> None:
+        result = self._str_error_result()
+        restored = ActionResult.from_dict(result.to_dict())
+        assert restored.error is not None
+        assert restored.error.category == ErrorCategory.UNKNOWN
+        assert restored.error.message == "vision_unavailable"
+
+    def test_serialized_string_error_is_redacted(self) -> None:
+        """A secret embedded in a string error must be redacted in the
+        serialized output, same as ActionError messages."""
+        from super_browser.security.action_redaction import (
+            SecurityConfig,
+            configure_redaction,
+        )
+
+        configure_redaction(SecurityConfig())
+        try:
+            result = action_result(ok=False)
+            result.error = "vision_unavailable key sk-ant-api20-abcdefghijklmnopqrstuvwxyz0123456789abcd"
+            d = result.to_dict()
+            assert "sk-ant-api20-abcdefghijklmnopqrstuvwxyz0123456789abcd" not in json.dumps(d)
+            assert d["error"]["message"] != result.error
+        finally:
+            # Reset so other tests see the unconfigured default.
+            configure_redaction(SecurityConfig())

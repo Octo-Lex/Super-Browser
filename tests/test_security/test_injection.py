@@ -125,7 +125,7 @@ class TestSanitization:
 
 
 class TestPerformance:
-    def test_large_text_under_5ms(self):
+    def test_large_text_scan_avoids_quadratic_blowup(self):
         """A ~105KB scan must stay far below a second — this catches
         algorithmic blowups (quadratic regex behavior), not absolute runner
         speed. Shared CI runners plus coverage tracing routinely add

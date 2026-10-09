@@ -448,3 +448,4 @@ async def test_planning_calls_record_conservative_estimate() -> None:
     assert governor.daily_spend > 0, "planning spend must be recorded"
     estimated = [r for r in governor._records if "(estimated)" in r.action_name]
     assert len(estimated) == 2, "both planning calls must record an estimate"
+
