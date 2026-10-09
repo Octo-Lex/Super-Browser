@@ -2,7 +2,7 @@
 
 All notable changes to this project will be documented in this file.
 
-## [2.14.0] — 2026-10-08
+## [2.14.0] — 2026-10-09
 
 ### Added — composition root and normalized page abstraction
 
@@ -44,20 +44,57 @@ All notable changes to this project will be documented in this file.
 - **Engine-owned shutdown**: `SuperBrowser.stop()` stops the engine exactly
   once; non-Patchright engines (previously left running) are now actually
   stopped, and the Patchright `BrowserSession` is never double-stopped.
-- **Governed LLM (PR 2)**: with budget governance enabled, the agent loop's
-  LLM is the governed client — every planning path (`propose_action`,
-  `create_plan`, `replan`) traverses the daily cap and raises
-  `BudgetExhaustedError` when it is spent. The agent loop translates that
-  into a `budget_exhausted` completion (`CompletionReason.BUDGET_EXHAUSTED`)
-  instead of stepping into guaranteed-failure calls. Context-compressor
-  costs are recorded through the same governed client.
+- **Governed LLM with admission control (PR 2)**: with budget governance
+  enabled, the agent loop's LLM is the governed client — every planning
+  path (`propose_action`, `propose_action_stream`, `create_plan`,
+  `replan`) is admitted BEFORE dispatch: the projected request cost
+  (estimated input tokens plus a bounded output allowance at the model's
+  rate; unknown models priced at the most expensive known rate) must fit
+  the remaining daily budget, or `BudgetExhaustedError` is raised and the
+  underlying LLM is never called. The agent loop translates exhaustion
+  into a `budget_exhausted` completion
+  (`CompletionReason.BUDGET_EXHAUSTED`) instead of stepping into
+  guaranteed-failure calls. Admission is estimated-cost governance, not an
+  absolute billing guarantee; actual provider usage is recorded after each
+  call.
+- **Token streaming preserved under governance (PR 2)**: the governed
+  client implements `propose_action_stream` — admission runs before the
+  first token, token events are forwarded unchanged, and usage is recorded
+  from the final streamed result (providers deliver real token counts
+  there). Budget enablement no longer disables token streaming.
+- **Restart-safe governance (PR 2)**: the facade retains the untouched
+  configured client and rebuilds the governed wrapper from it on every
+  start — governed wrappers never nest, exactly one governor stays active
+  across `start()`/`stop()`/`start()` cycles, and reported remaining budget
+  matches the enforcing governor.
+- **Conservative planning and unknown-model accounting (PR 2)**:
+  `create_plan`/`replan` record a clearly identified estimated usage record
+  (prompt-length input plus a bounded output allowance, action name
+  suffixed `(estimated)`) instead of a zero-token record; unknown models
+  are priced at the conservative fallback rate rather than $0.
+
+### Added — agent-services composition contracts (Step 6)
+
+- New `test_agent_services.py` contract suite covering the agent-service
+  wiring end to end: security gating (a blocking manager stops a facade
+  mutation BEFORE the controller is consulted; a passing manager is
+  consulted once; the default configuration runs ungated), recovery
+  routing (loop dispatch crosses the recovery coordinator when enabled;
+  direct dispatch otherwise), vision composition (`enable_vision` connects
+  the controller fallback; the default leaves it unwired; `analyze_image`
+  without the flag or provider env reports `vision_unavailable`), stealth
+  dispatch (`evaluate_action` is consulted on every dispatched action; a
+  deny verdict blocks the action with a SECURITY error before execution),
+  and the MCP default-mode refusal contract (a mutation returns a
+  structured policy refusal, never unknown-tool).
 
 ### Changed
 
 - **Budget caps are honored (PR 2)**: `TokenBudgetGovernor` is constructed
   from the user's `Config.budget` — previously the user's caps were silently
-  ignored in favor of package defaults ($10 daily). A tiny configured cap
-  now demonstrably blocks the agent's second LLM call.
+  ignored in favor of package defaults ($10 daily). Under a tiny configured
+  cap, a request projected to exceed the remaining budget is refused before
+  the underlying LLM is called.
 - **Abort lifecycle (PR 2)**: `SuperBrowser.abort()` terminates an active
   `act()`/`act_stream()` run (mapped to `CompletionReason.CANCELLED`), and
   each new run starts with a cleared signal — a stale abort no longer
