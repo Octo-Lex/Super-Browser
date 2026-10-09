@@ -276,3 +276,40 @@ async def test_mcp_default_mode_refuses_mutation_not_unknown_tool() -> None:
     assert payload["ok"] is False
     assert "refusal" in payload, "must be a policy refusal, not unknown-tool"
     assert "disable" in payload["refusal"]["reason"]
+
+
+# ============================================================================
+# Facade error-path regression — history edge returns a structured error
+# (mypy gate expansion caught ErrorCategory.PAGE_ERROR, which never existed)
+# ============================================================================
+
+
+async def test_go_back_at_history_edge_returns_structured_error() -> None:
+    """go_back at the history edge must return a VALIDATION-category result —
+    not crash with AttributeError on the nonexistent PAGE_ERROR category."""
+    sb = await _started_facade()
+    sb._page = MagicMock()
+    sb._page.go_back = AsyncMock(
+        return_value=MagicMock(navigated=False, url="https://example.com/")
+    )
+
+    result = await sb.go_back()
+
+    assert result.ok is False
+    assert result.error is not None
+    assert result.error.category.value == "validation"
+    assert "history" in result.error.message.lower()
+
+
+async def test_go_forward_at_history_edge_returns_structured_error() -> None:
+    sb = await _started_facade()
+    sb._page = MagicMock()
+    sb._page.go_forward = AsyncMock(
+        return_value=MagicMock(navigated=False, url="https://example.com/")
+    )
+
+    result = await sb.go_forward()
+
+    assert result.ok is False
+    assert result.error is not None
+    assert result.error.category.value == "validation"

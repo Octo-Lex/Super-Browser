@@ -27,11 +27,13 @@ jobs:
           python-version: "3.12"
       - name: Install package with dev deps
         run: pip install -e ".[dev,all]"
-      - name: Type-check protocols and backends
+      - name: Type-check protocols, backends, and composition-critical modules
         run: >
           python -m mypy
           src/super_browser/browser/engine.py
           src/super_browser/browser/backends/
+          src/super_browser/agent/facade.py
+          src/super_browser/agent/loop.py
           --ignore-missing-imports
 
   test:
@@ -74,6 +76,8 @@ jobs:
         run: >
           python -m pytest tests/
           -p no:benchmark
+          --cov=super_browser
+          --cov-report=xml
           -m "not flaky"
           --ignore=tests/e2e_full_journey.py
           --ignore=tests/e2e_advanced.py
@@ -93,4 +97,5 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: coverage-report
-          path: .coverage
+          path: coverage.xml
+          if-no-files-found: error

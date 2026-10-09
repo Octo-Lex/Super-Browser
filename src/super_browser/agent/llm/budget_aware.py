@@ -87,7 +87,7 @@ def _extract_tokens(result: Any) -> tuple[int, int]:
     return 0, 0
 
 
-class BudgetAwareLLMClient:
+class BudgetAwareLLMClient(LLMClient):
     """Wraps any :class:`LLMClient` and records every call in the governor.
 
     Parameters

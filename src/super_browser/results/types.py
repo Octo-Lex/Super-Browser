@@ -205,7 +205,10 @@ class ActionResult:
     """
     ok: bool
     data: Any = None
-    error: Optional[ActionError] = None
+    # P2-review: historical call sites pass plain strings (e.g.
+    # "vision_unavailable"); the declared type reflects that runtime
+    # contract instead of silently mistyping them.
+    error: Optional[ActionError | str] = None
     meta: ResultMeta = field(default_factory=lambda: ResultMeta(
         trace_id=str(uuid.uuid4()), duration_ms=0.0,
     ))
@@ -218,11 +221,30 @@ class ActionResult:
     def to_json(self) -> str:
         return json.dumps(self.to_dict(), default=str)
 
+    def _error_to_dict(self) -> Optional[dict]:
+        """Serialize the error to the canonical ActionError dict shape.
+
+        Historical call sites store plain strings (e.g.
+        "vision_unavailable"); those serialize as UNKNOWN-category errors so
+        the shape stays consistent and the message stays redactable.
+        """
+        if not self.error:
+            return None
+        if isinstance(self.error, str):
+            return {
+                "category": ErrorCategory.UNKNOWN,
+                "message": self.error,
+                "selector": None,
+                "recoverable": True,
+                "retry_hint": None,
+            }
+        return self.error.to_dict()
+
     def to_dict(self) -> dict:
         d = {
             "ok": self.ok,
             "data": _serialize_data(self.data),
-            "error": self.error.to_dict() if self.error else None,
+            "error": self._error_to_dict(),
             "meta": self.meta.to_dict(),
         }
         d["result_category"] = self.result_category
@@ -240,7 +262,12 @@ class ActionResult:
     @classmethod
     def from_dict(cls, d: dict) -> ActionResult:
         meta = ResultMeta.from_dict(d["meta"])
-        error = ActionError.from_dict(d["error"]) if d.get("error") else None
+        raw_error = d.get("error")
+        error = (
+            ActionError.from_dict(raw_error)
+            if isinstance(raw_error, dict)
+            else (ActionError(ErrorCategory.UNKNOWN, str(raw_error)) if raw_error else None)
+        )
         return cls(
             ok=d["ok"],
             data=d.get("data"),
@@ -265,6 +292,8 @@ class ActionResult:
         :raises RuntimeError: When ok is False, with error details.
         """
         if not self.ok and self.error:
+            if isinstance(self.error, str):
+                raise RuntimeError(self.error)
             raise RuntimeError(f"{self.error.category.value}: {self.error.message}")
         elif not self.ok:
             raise RuntimeError("Action failed with no error detail")
@@ -297,7 +326,7 @@ def _resolve_trace_id() -> str:
 def action_result(
     ok: bool,
     data: Any = None,
-    error: Optional[ActionError] = None,
+    error: Optional[ActionError | str] = None,
     method: Optional[ActionMethod] = None,
     screenshot_hash: Optional[str] = None,
     token_cost: float = 0.0,

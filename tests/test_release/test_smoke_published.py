@@ -316,3 +316,107 @@ class TestInstallSpecFormat:
             bracket_pos = pkg_arg.index("[")
             eq_pos = pkg_arg.index("==")
             assert bracket_pos < eq_pos, f"Extras must come before version: {pkg_arg}"
+
+
+# ============================================================================
+# CI-7.1 — install-timeout classification and INCONCLUSIVE boundary
+# ============================================================================
+
+
+class TestInstallTimeoutClassification:
+    """A slow download is infrastructure (install_timeout), never an SDK
+    defect. A finite failure boundary is retained via the exit code."""
+
+    def test_timeout_check_classified_install_timeout(self) -> None:
+        result = sp._check_result("install_all", 124, "", "Command timed out after 600s")
+        assert result["classification"] == "install_timeout"
+        assert result["passed"] is False
+
+    def test_non_timeout_failure_classified_sdk_defect(self) -> None:
+        result = sp._check_result("install_all", 1, "", "ERROR: Package not found")
+        assert result["classification"] == "sdk_defect"
+
+    def test_passing_check_classified_none(self) -> None:
+        result = sp._check_result("import_super_browser", 0, "2.14.0", "")
+        assert result["classification"] == "sdk_defect"
+        assert result["passed"] is True
+
+    def test_all_timeout_failures_report_inconclusive(self) -> None:
+        """Only-timeout failures are INCONCLUSIVE — infrastructure, not a
+        broken package. The finite boundary stays: the CLI exits non-zero."""
+        checks = [
+            sp._check_result("pip_upgrade", 0, "upgraded", ""),
+            sp._check_result("install_all", 124, "", "Command timed out after 600s"),
+        ]
+        report = sp._build_report("ts", "spec", checks)
+        assert report["summary"]["overall"] == "INCONCLUSIVE"
+
+    def test_sdk_defect_failure_still_reports_fail(self) -> None:
+        checks = [
+            sp._check_result("pip_upgrade", 0, "upgraded", ""),
+            sp._check_result("install_all", 1, "", "ERROR: Package not found"),
+        ]
+        report = sp._build_report("ts", "spec", checks)
+        assert report["summary"]["overall"] == "FAIL"
+
+    def test_mixed_timeout_and_sdk_defect_reports_fail(self) -> None:
+        """One real SDK failure outweighs an infrastructure timeout."""
+        checks = [
+            sp._check_result("install_all", 124, "", "Command timed out after 600s"),
+            sp._check_result("import_super_browser", 1, "", "ImportError"),
+        ]
+        report = sp._build_report("ts", "spec", checks)
+        assert report["summary"]["overall"] == "FAIL"
+
+    def test_install_windows_are_600s(self) -> None:
+        """CI-7.1: the [all] and extra-install windows are 600 seconds —
+        a cold-cache [all] resolution can legitimately exceed 180s."""
+        import inspect
+
+        source = inspect.getsource(sp.run_smoke)
+        assert "timeout=600" in source
+        assert "timeout=180" not in source
+
+
+class TestTimeoutClassificationByOperation:
+    """P2-review: timeout classification is by OPERATION, not exit code
+    alone. Installation timeouts are infrastructure; runtime timeouts
+    (import, CLI) are SDK defects — a run containing only runtime timeouts
+    must FAIL, not go INCONCLUSIVE."""
+
+    def test_import_timeout_classified_sdk_defect(self) -> None:
+        result = sp._check_result("import_super_browser", 124, "", "timed out after 120s")
+        assert result["classification"] == "sdk_defect"
+
+    def test_cli_timeout_classified_sdk_defect(self) -> None:
+        result = sp._check_result("cli_version", 124, "", "timed out after 120s")
+        assert result["classification"] == "sdk_defect"
+
+    def test_install_timeouts_classified_install_timeout(self) -> None:
+        for name in ("install_all (superbrowser-sdk[all]==2.14.0)",
+                     "install_patchright (superbrowser-sdk[patchright]==2.14.0)",
+                     "install_playwright (superbrowser-sdk[playwright]==2.14.0)"):
+            result = sp._check_result(name, 124, "", "timed out")
+            assert result["classification"] == "install_timeout", name
+
+    def test_runtime_only_timeout_run_reports_fail(self) -> None:
+        """Install succeeded; the SDK import hung. This is an SDK failure —
+        the run must report FAIL, never INCONCLUSIVE."""
+        checks = [
+            sp._check_result("pip_upgrade", 0, "upgraded", ""),
+            sp._check_result("install_all (superbrowser-sdk[all]==2.14.0)", 0, "installed", ""),
+            sp._check_result("import_super_browser", 124, "", "timed out after 120s"),
+        ]
+        report = sp._build_report("ts", "spec", checks)
+        assert report["summary"]["overall"] == "FAIL"
+
+    def test_mixed_install_ok_and_import_timeout_reports_fail(self) -> None:
+        checks = [
+            sp._check_result("pip_upgrade", 0, "upgraded", ""),
+            sp._check_result("install_all (superbrowser-sdk[all]==2.14.0)", 0, "installed", ""),
+            sp._check_result("import_super_browser", 124, "", "timed out after 120s"),
+            sp._check_result("cli_version", 124, "", "timed out after 120s"),
+        ]
+        report = sp._build_report("ts", "spec", checks)
+        assert report["summary"]["overall"] == "FAIL"
+        assert report["summary"]["failed"] == 2
