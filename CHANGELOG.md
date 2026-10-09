@@ -90,6 +90,24 @@ All notable changes to this project will be documented in this file.
   deny verdict blocks the action with a SECURITY error before execution),
   and the MCP default-mode refusal contract (a mutation returns a
   structured policy refusal, never unknown-tool).
+- Dedicated CI gates: a required composition-contract job (browsers and
+  Tesseract provisioned, skips fail the gate) and a browser-integration
+  job running real Patchright and Playwright verticals — including
+  dead-page MCP recovery — through the public facade with an
+  executed-count check (a vertical that skips fails the gate).
+
+- New `test_agent_services.py` contract suite covering the agent-service
+  wiring end to end: security gating (a blocking manager stops a facade
+  mutation BEFORE the controller is consulted; a passing manager is
+  consulted once; the default configuration runs ungated), recovery
+  routing (loop dispatch crosses the recovery coordinator when enabled;
+  direct dispatch otherwise), vision composition (`enable_vision` connects
+  the controller fallback; the default leaves it unwired; `analyze_image`
+  without the flag or provider env reports `vision_unavailable`), stealth
+  dispatch (`evaluate_action` is consulted on every dispatched action; a
+  deny verdict blocks the action with a SECURITY error before execution),
+  and the MCP default-mode refusal contract (a mutation returns a
+  structured policy refusal, never unknown-tool).
 
 ### Changed
 

@@ -125,6 +125,7 @@ markers = [
     "live: tests requiring a real browser AND real LLM API (excluded from CI)",
     "live_stealth: tests requiring live detection sites (excluded from CI)",
     "flaky: tests that may fail intermittently due to timing or environment",
+    "browser_integration: real-browser gate verticals (Patchright + Playwright through the public facade)",
     "adversarial: adversarial stealth validation harness tests",
     "tier1: Tier 1 open-scanner adversarial tests (SB_ADV=1)",
     "tier2: Tier 2 commercial-vendor adversarial tests (triple opt-in)",
