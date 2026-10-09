@@ -69,6 +69,15 @@ async def _full_vertical(sb: SuperBrowser, uri: str) -> None:
     clicked = await sb.click("#b")
     assert clicked.ok, f"click failed: {clicked.error}"
 
+    # Click-and-verify: the fixture button rewrites document.title, so a
+    # backend that returns ok without dispatching the click event fails
+    # here — action success alone does not prove the DOM changed.
+    after = await sb.observe()
+    assert after.ok, f"post-click observe failed: {after.error}"
+    assert after.data["title"] == "CLICKED", (
+        f"click did not change the DOM: title={after.data['title']!r}"
+    )
+
     shot = await sb._capture_region_bytes(format="png")
     assert len(shot[0]) > 0, "screenshot capture failed"
 
@@ -117,18 +126,22 @@ async def test_mcp_dead_page_recovery(tmp_path: Path) -> None:
     )
 
     sb = await runtime.get_browser()
-    await sb.navigate(fixture.as_uri())
-    assert sb.is_alive is True
+    try:
+        await sb.navigate(fixture.as_uri())
+        assert sb.is_alive is True
 
-    # Force page death BEHIND the runtime's back (simulates a crash or an
-    # external close — exactly what the recovery path exists for).
-    await sb._page.engine_page.close()
-    assert sb.is_alive is False
+        # Force page death BEHIND the runtime's back (simulates a crash or an
+        # external close — exactly what the recovery path exists for).
+        await sb._page.engine_page.close()
+        assert sb.is_alive is False
 
-    recovered = await runtime.get_browser()
-    assert recovered is not sb, "the stale facade must be replaced"
-    assert recovered.is_alive is True
+        recovered = await runtime.get_browser()
+        assert recovered is not sb, "the stale facade must be replaced"
+        assert recovered.is_alive is True
 
-    await recovered.navigate(fixture.as_uri())
-    assert recovered.is_alive is True
-    await runtime.shutdown()
+        await recovered.navigate(fixture.as_uri())
+        assert recovered.is_alive is True
+    finally:
+        # Cleanup must run even when a recovery assertion fails — a live
+        # Chromium process left behind interferes with other tests.
+        await runtime.shutdown()
