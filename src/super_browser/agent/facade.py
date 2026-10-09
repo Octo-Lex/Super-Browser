@@ -68,6 +68,10 @@ class SuperBrowser:
         self._running = False
         self._coordinator: Any = None
         self._budget_client: Any = None
+        # P2-review: the UNTOUCHED configured client. Budget governance wraps
+        # this into _llm_client at start(); restarts re-wrap from here, so
+        # governed wrappers never nest.
+        self._llm_client_raw = llm_client
         self._flow_logger: Any = None
         self._security_manager: Any = None
         self._vision_controller: Any = None
@@ -165,13 +169,15 @@ class SuperBrowser:
             # P2 (PR 2): the loop's LLM is the GOVERNED client — every
             # planning path (propose_action / create_plan / replan) traverses
             # the daily cap and raises BudgetExhaustedError when it is hit.
-            if self._llm_client is not None:
+            # The wrapper is built from _llm_client_raw (the untouched
+            # configured client), so restarts never nest wrappers.
+            if self._llm_client_raw is not None:
                 from super_browser.agent.llm.budget_aware import (
                     BudgetAwareLLMClient,
                 )
 
                 self._llm_client = BudgetAwareLLMClient(
-                    self._llm_client, governor, model=cfg.agent.llm_model
+                    self._llm_client_raw, governor, model=cfg.agent.llm_model
                 )
                 comp = ContextCompressor(budget_client=self._llm_client)
             else:

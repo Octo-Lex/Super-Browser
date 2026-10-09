@@ -84,7 +84,9 @@ class TestCostRecording:
 
     @pytest.mark.asyncio()
     async def test_create_plan_records_cost(self) -> None:
-        """TEST-04-02-01b: create_plan records a usage record (0 tokens since plan has no token metadata)."""
+        """TEST-04-02-01b: create_plan records a conservative ESTIMATED usage
+        record (plans carry no provider usage metadata, so the wrapper
+        estimates: prompt-length input + bounded output allowance)."""
         governor = _make_governor()
         stub = _make_stub_client()
         wrapper = BudgetAwareLLMClient(stub, governor, model="gpt-4o")
@@ -97,11 +99,12 @@ class TestCostRecording:
         records = governor.records
         assert len(records) == 1
         rec = records[0]
-        assert rec.action_name == "create_plan"
+        assert rec.action_name == "create_plan (estimated)"
         assert rec.model == "gpt-4o"
-        # create_plan returns list[dict] — no token metadata, so tokens are 0.
-        assert rec.input_tokens == 0
-        assert rec.output_tokens == 0
+        # "Open Google" is 11 chars → 2 estimated input tokens; output is the
+        # bounded planning allowance (1000).
+        assert rec.input_tokens == 2
+        assert rec.output_tokens == 1000
 
     @pytest.mark.asyncio()
     async def test_replan_records_cost(self) -> None:
@@ -121,7 +124,7 @@ class TestCostRecording:
 
         records = governor.records
         assert len(records) == 1
-        assert records[0].action_name == "replan"
+        assert records[0].action_name == "replan (estimated)"
 
     @pytest.mark.asyncio()
     async def test_multiple_calls_accumulate_in_governor(self) -> None:
@@ -139,8 +142,11 @@ class TestCostRecording:
         assert governor.daily_spend > 0
 
     @pytest.mark.asyncio()
-    async def test_unknown_model_records_zero_cost(self) -> None:
-        """TEST-04-02-01e: Unknown model records a record with zero cost."""
+    async def test_unknown_model_priced_at_conservative_fallback(self) -> None:
+        """TEST-04-02-01e: Unknown models are priced at the most expensive
+        known rate — unknown pricing must not silently bypass enforcement.
+        The stub reports 100 in / 50 out → (100 x 0.015 + 50 x 0.075) / 1000
+        = 0.00525 USD."""
         governor = _make_governor()
         stub = _make_stub_client()
         wrapper = BudgetAwareLLMClient(stub, governor, model="unknown-model-xyz")
@@ -149,7 +155,7 @@ class TestCostRecording:
 
         records = governor.records
         assert len(records) == 1
-        assert records[0].estimated_cost_usd == 0.0
+        assert records[0].estimated_cost_usd == pytest.approx(0.00525)
 
     def test_estimate_cost_known_model(self) -> None:
         """TEST-04-02-01f: Cost estimation returns non-zero for known models."""
@@ -159,9 +165,11 @@ class TestCostRecording:
         assert abs(cost - 0.0105) < 1e-9
 
     def test_estimate_cost_unknown_model(self) -> None:
-        """TEST-04-02-01g: Cost estimation returns 0 for unknown models."""
+        """TEST-04-02-01g: Unknown models fall back to the most expensive
+        known rate (0.015 in / 0.075 out per 1k) so enforcement cannot be
+        bypassed by an unrecognized model name."""
         cost = _estimate_cost_usd("nonexistent-model", 1000, 500)
-        assert cost == 0.0
+        assert cost == pytest.approx(0.0525)
 
 
 # ===================================================================
